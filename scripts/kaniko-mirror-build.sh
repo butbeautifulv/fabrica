@@ -355,16 +355,113 @@ if ls "$VENDOR_DIR"/*.whl >/dev/null 2>&1; then
 fi
 echo "[kaniko] gismaputils_vendor set=${GISMAP_VENDOR_SET} dir=${VENDOR_DIR}"
 
+# aodb-log-tools: same Package Registry vendor pattern (poetry path-dep; no --extra-index-url).
+AODB_INDEX_HOST="${AODB_INDEX_HOST:-${GISMAPUTILS_INDEX_HOST:-gitlab.svo.aero}}"
+AODB_PYPI_PROJECT_ID="${AODB_PYPI_PROJECT_ID:-${GISMAPUTILS_PYPI_PROJECT_ID:-1962}}"
+AODB_VENDOR_DIR="${CONTEXT}/vendor-aodb-log-tools"
+AODB_TOKEN="${GISMAPUTILS_PYPI_TOKEN:-${CI_JOB_TOKEN:-}}"
+AODB_VENDOR_SET=0
+if [ -n "$AODB_TOKEN" ] && [ -d "$CONTEXT" ] && command -v python3 >/dev/null 2>&1; then
+  NEED_AODB=0
+  if [ -f "$CONTEXT/pyproject.toml" ] && grep -qE 'aodb-log-tools|aodb_log_tools' "$CONTEXT/pyproject.toml"; then
+    NEED_AODB=1
+  elif [ -f "$CONTEXT/poetry.lock" ] && grep -qE 'name = "aodb-log-tools"' "$CONTEXT/poetry.lock"; then
+    NEED_AODB=1
+  fi
+  if [ "$NEED_AODB" = "1" ]; then
+    mkdir -p "$AODB_VENDOR_DIR"
+    AODB_TOKEN="$AODB_TOKEN" AODB_INDEX_HOST="$AODB_INDEX_HOST" \
+    AODB_PYPI_PROJECT_ID="$AODB_PYPI_PROJECT_ID" AODB_VENDOR_DIR="$AODB_VENDOR_DIR" \
+    CONTEXT="$CONTEXT" python3 - <<'PY'
+import os, ssl, urllib.request, re, sys, tarfile, io
+from pathlib import Path
+
+host = os.environ["AODB_INDEX_HOST"]
+pid = os.environ["AODB_PYPI_PROJECT_ID"]
+tok = os.environ["AODB_TOKEN"]
+vendor = Path(os.environ["AODB_VENDOR_DIR"])
+context = Path(os.environ["CONTEXT"])
+ctx = ssl.create_default_context()
+ctx.check_hostname = False
+ctx.verify_mode = ssl.CERT_NONE
+simple = f"https://{host}/api/v4/projects/{pid}/packages/pypi/simple/aodb-log-tools/"
+req = urllib.request.Request(simple, headers={"PRIVATE-TOKEN": tok})
+try:
+    html = urllib.request.urlopen(req, context=ctx, timeout=60).read().decode("utf-8", "replace")
+except Exception as e:
+    print(f"[kaniko] WARN: cannot list aodb-log-tools simple index: {e}", file=sys.stderr)
+    sys.exit(0)
+
+# Prefer sdist for path-dep; fall back to wheel extract via sdist only.
+m = re.search(r'href="([^"]*aodb_log_tools-1\.0\.0\.tar\.gz)[^"]*"', html, re.I)
+if not m:
+    m = re.search(r'href="([^"]*aodb_log_tools-1\.0\.0[^"]+\.whl)[^"]*"', html, re.I)
+if not m:
+    print("[kaniko] WARN: no aodb-log-tools==1.0.0 artifact in Package Registry", file=sys.stderr)
+    sys.exit(0)
+url = m.group(1)
+if url.startswith("/"):
+    url = f"https://{host}{url}"
+req2 = urllib.request.Request(url, headers={"PRIVATE-TOKEN": tok})
+data = urllib.request.urlopen(req2, context=ctx, timeout=120).read()
+name = url.split("/")[-1].split("#")[0]
+pkg_path = vendor / name
+pkg_path.write_bytes(data)
+print(f"[kaniko] downloaded {name} ({len(data)} bytes)")
+
+# Unpack into vendor-aodb-log-tools/ so poetry path dep sees package root.
+if name.endswith(".tar.gz"):
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tf:
+        tf.extractall(vendor)
+    # flatten aodb_log_tools-1.0.0/* → vendor/
+    for child in list(vendor.iterdir()):
+        if child.is_dir() and child.name.startswith("aodb_log_tools"):
+            for item in child.iterdir():
+                dest = vendor / item.name
+                if dest.exists():
+                    continue
+                item.rename(dest)
+            try:
+                child.rmdir()
+            except OSError:
+                pass
+            break
+elif name.endswith(".whl"):
+    import zipfile
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        zf.extractall(vendor)
+    # synthesize minimal pyproject for path install
+    (vendor / "pyproject.toml").write_text(
+        "[build-system]\nrequires=['setuptools']\nbuild-backend='setuptools.build_meta'\n"
+        "[project]\nname='aodb-log-tools'\nversion='1.0.0'\n"
+        "requires-python='>=3.10'\n",
+        encoding="utf-8",
+    )
+
+# Mark for Dockerfile hardener
+(context / ".aodb_log_tools_vendored").write_text("1.0.0\n", encoding="utf-8")
+print(f"[kaniko] vendored aodb-log-tools==1.0.0 → {vendor}")
+PY
+    if [ -f "${CONTEXT}/.aodb_log_tools_vendored" ]; then
+      AODB_VENDOR_SET=1
+    fi
+  fi
+fi
+echo "[kaniko] aodb_log_tools_vendor set=${AODB_VENDOR_SET} dir=${AODB_VENDOR_DIR}"
+
 # O5/O6: harden Dockerfile — setuptools pin, poetry inject, skip public apt, PIP_NO_INPUT.
 if [ -f "$DF" ] && command -v python3 >/dev/null 2>&1; then
-  DF="$DF" GISMAP_VENDOR_SET="$GISMAP_VENDOR_SET" PIP_TRUST_NAME="${PIP_TRUST_NAME:-nexus.svo.aero}" \
+  DF="$DF" CONTEXT="$CONTEXT" GISMAP_VENDOR_SET="$GISMAP_VENDOR_SET" AODB_VENDOR_SET="$AODB_VENDOR_SET" \
+  PIP_TRUST_NAME="${PIP_TRUST_NAME:-nexus.svo.aero}" \
   BUILD_BASE_IMAGE="$BUILD_BASE_IMAGE" NEXUS_PYPI_URL="${NEXUS_PYPI_URL:-}" \
   NEXUS_APT_MIRROR="${NEXUS_APT_MIRROR:-}" \
   NEXUS_USER="${NEXUS_USER:-}" NEXUS_PASSWORD="${NEXUS_PASSWORD:-}" python3 - <<'PY'
 import os, re
 from urllib.parse import quote
 df = os.environ["DF"]
+context = os.environ.get("CONTEXT") or ""
 vendor = os.environ.get("GISMAP_VENDOR_SET") == "1"
+aodb_vendor = os.environ.get("AODB_VENDOR_SET") == "1"
 trust = os.environ.get("PIP_TRUST_NAME") or "nexus.svo.aero"
 base = os.environ.get("BUILD_BASE_IMAGE") or ""
 pypi = (os.environ.get("NEXUS_PYPI_URL") or "").strip().rstrip("/")
@@ -406,6 +503,41 @@ if vendor and "vendor-gismaputils" not in joined:
         out.insert(0, "COPY ./vendor-gismaputils /app/vendor-gismaputils\n")
     lines = out
 
+# aodb-log-tools path vendor: COPY into image; pyproject rewrite happens on CONTEXT below.
+if aodb_vendor:
+    joined = "".join(lines)
+    if "vendor-aodb-log-tools" not in joined:
+        out, inserted = [], False
+        for line in lines:
+            out.append(line)
+            if not inserted and re.match(r"^COPY\s+", line):
+                out.append("COPY ./vendor-aodb-log-tools /code/vendor-aodb-log-tools\n")
+                inserted = True
+        if not inserted:
+            out.insert(0, "COPY ./vendor-aodb-log-tools /code/vendor-aodb-log-tools\n")
+        lines = out
+        print("[kaniko] inserted COPY vendor-aodb-log-tools")
+    # Path-dep in pyproject so poetry does not hit Nexus for aodb-log-tools.
+    if context:
+        from pathlib import Path
+        pp = Path(context) / "pyproject.toml"
+        if pp.is_file():
+            ppt = pp.read_text(encoding="utf-8", errors="replace")
+            ppt2, n = re.subn(
+                r'(?m)^(\s*)aodb-log-tools\s*=\s*["\'][^"\']+["\']\s*$',
+                r'\1aodb-log-tools = { path = "vendor-aodb-log-tools", develop = false }',
+                ppt,
+            )
+            if n == 0:
+                ppt2, n = re.subn(
+                    r'(?m)^(\s*)aodb-log-tools\s*=\s*\{[^}]*\}\s*$',
+                    r'\1aodb-log-tools = { path = "vendor-aodb-log-tools", develop = false }',
+                    ppt,
+                )
+            if n:
+                pp.write_text(ppt2, encoding="utf-8")
+                print(f"[kaniko] rewritten pyproject aodb-log-tools → path vendor ({n})")
+
 # ENV PIP_NO_INPUT after first FROM (avoid interactive gitlab.svo.aero auth EOF).
 if not any("PIP_NO_INPUT" in ln for ln in lines):
     tmp, inserted_env = [], False
@@ -416,6 +548,7 @@ if not any("PIP_NO_INPUT" in ln for ln in lines):
             tmp.append(f"ENV PIP_TRUSTED_HOST={trust}\n")
             inserted_env = True
     lines = tmp
+
 elif not any("PIP_TRUSTED_HOST" in ln for ln in lines):
     tmp, inserted_env = [], False
     for line in lines:
@@ -517,7 +650,9 @@ if uses_poetry and not has_poetry_install:
     lines = out_po
 
 # Stale poetry.lock vs pyproject.toml → "changed significantly"; refresh before install.
+# Path-vendored aodb needs a real lock refresh (not --no-update).
 if uses_poetry:
+    lock_cmd = "poetry lock" if aodb_vendor else "poetry lock --no-update"
     out_lock, n_lock = [], 0
     for line in lines:
         if (
@@ -526,7 +661,7 @@ if uses_poetry:
         ):
             line = re.sub(
                 r"\bpoetry\s+install\b",
-                "poetry lock --no-update && poetry install",
+                f"{lock_cmd} && poetry install",
                 line,
                 count=1,
                 flags=re.I,
@@ -534,7 +669,7 @@ if uses_poetry:
             n_lock += 1
         out_lock.append(line)
     if n_lock:
-        print(f"[kaniko] prepended poetry lock --no-update before poetry install ({n_lock})")
+        print(f"[kaniko] prepended {lock_cmd} before poetry install ({n_lock})")
         lines = out_lock
 
 # Corp Nexus often has custom CA; poetry/requests fail CERTIFICATE_VERIFY_FAILED.

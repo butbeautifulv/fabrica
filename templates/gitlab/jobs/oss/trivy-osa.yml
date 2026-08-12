@@ -162,3 +162,31 @@ trivy-osa:
       - epss-hits.json
       - .trivy-cache
     expire_in: 30 days
+
+# K8s executor: Trivy image has no python3 and no docker socket — enrich/gate in a
+# follow-up job on OSS_PYTHON_IMAGE (Nexus) so kev-hits.json / epss-hits.json land.
+trivy-osa-enrich:
+  stage: security
+  extends:
+    - .workflow_rules_security
+    - .security_job_defaults
+  image:
+    name: ${OSS_PYTHON_IMAGE:-nexus.svo.aero:8345/library/python:3.11.11-slim-bookworm}
+    entrypoint: [""]
+  needs:
+    - job: trivy-osa
+      artifacts: true
+  script:
+    - |
+      set -eu
+      test -f osa.sarif
+      python3 scripts/kev-enrich-sarif.py --in osa.sarif --catalog config/kev/cisa-kev.min.json --hits kev-hits.json
+      python3 scripts/epss-enrich-sarif.py --in osa.sarif --catalog config/epss/epss_scores.min.json.gz --hits epss-hits.json
+      python3 scripts/gate-check.py --control osa --report osa.sarif --policy "${SECURITY_POLICY:-config/security-gate-policy-adopt.yaml}"
+  artifacts:
+    paths:
+      - osa.sarif
+      - kev-hits.json
+      - epss-hits.json
+    expire_in: 30 days
+  allow_failure: true

@@ -298,6 +298,12 @@ grep -q 'kev-enrich-sarif.py' templates/gitlab/jobs/oss/trivy-osa.yml || \
   fail "trivy-osa must call kev-enrich-sarif.py"
 grep -q 'kev-enrich-sarif.py' templates/gitlab/jobs/oss/trivy-sca.yml || \
   fail "trivy-sca must call kev-enrich-sarif.py"
+grep -q 'trivy-osa-enrich' templates/gitlab/jobs/oss/trivy-osa.yml || \
+  fail "trivy-osa-enrich job required (k8s trivy image has no python)"
+grep -q 'trivy-sca-enrich' templates/gitlab/jobs/oss/trivy-sca.yml || \
+  fail "trivy-sca-enrich job required (k8s trivy image has no python)"
+grep -q 'vendor-aodb-log-tools' scripts/kaniko-mirror-build.sh || \
+  fail "kaniko must vendor aodb-log-tools"
 grep -q 'scripts/kev-enrich-sarif.py' scripts/point-copy-mirror.sh || \
   fail "point-copy missing kev-enrich-sarif.py"
 [[ -f scripts/kev-enrich-sarif.py ]] || fail "missing scripts/kev-enrich-sarif.py"

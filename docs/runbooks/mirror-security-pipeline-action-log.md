@@ -181,6 +181,7 @@ Tag evidence: `hwa_service/v0.1.4-hotfix29s` (pipeline `112552`); earlier fails 
 | Job dies before script (`29q`) | Root-owned `.trivy-cache/db` → git clean Permission denied | `GIT_CLEAN_FLAGS` exclude `.trivy-cache`; trivy `docker --user $(id -u)` |
 | `docker.sock: no such file` (`29r`) | Same runner tags → **k8s** executor; dind up but no `DOCKER_HOST` | `scripts/docker-host-bootstrap.sh` (sock vs `tcp://docker:2376`) |
 | Service pip fails (`gismaputils`) | Private package not on Nexus index | **Fixed (2026-07):** wheels `0.5.1`/`0.5.3` in `map_objects-ci` Package Registry; Kaniko vendors into `vendor-gismaputils/` + `--find-links` (no `--extra-index-url` — that forced pip onto GitLab/pypi.org SSL). CI var `GISMAPUTILS_PYPI_TOKEN`. Evidence: pipeline `112683` `BUILD_FALLBACK=0` |
+| Poetry fails (`aodb-log-tools`) | Package only on retired `nexus.code-discovery.ru`; not in GitLab as source | **Fixed (2026-08):** stub/wheel `1.0.0` in Package Registry **1962**; Kaniko vendors `vendor-aodb-log-tools/` + path-dep rewrite (reuse `GISMAPUTILS_PYPI_TOKEN`). No `--extra-index-url`. |
 
 Evidence (`29s` / `112552`):
 - `build-image` success — `[docker] host socket` + `[build] fallback pushed …hwa_service-1591605…`
@@ -220,6 +221,16 @@ twine upload --repository-url https://gitlab.svo.aero/api/v4/projects/1962/packa
 ```
 
 Evidence: pipeline `112683` / `112687` — `BUILD_FALLBACK=0`, `Processing ./vendor-gismaputils/gismaputils-0.5.1-…whl`.
+
+## aodb-log-tools Package Registry (map_objects-ci) — 2026-08-12
+
+| Item | Value |
+|------|--------|
+| Why | `mail_service` poetry dep; upstream only on retired `nexus.code-discovery.ru` (unreachable); no GitLab source project |
+| Package | `aodb-log-tools==1.0.0` (wheel + sdist) in project **1962** Package Registry |
+| Kaniko consume | download → `checkout/vendor-aodb-log-tools/` → rewrite pyproject to `{ path = "vendor-aodb-log-tools", develop = false }` → `poetry lock && poetry install` |
+| Token | reuse `GISMAPUTILS_PYPI_TOKEN` / `CI_JOB_TOKEN` |
+| Re-upload | `curl --form content=@aodb_log_tools-1.0.0-py3-none-any.whl …/projects/1962/packages/pypi` (or twine from a host that resolves `gitlab.svo.aero`) |
 
 ## Residual risks
 - **linter / bandit**: require `NEXUS_USER`+`NEXUS_PASSWORD` with `PIP_INDEX_URL`; shell path still docker-runs python when host lacks pip — keep caches off workspace.

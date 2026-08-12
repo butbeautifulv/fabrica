@@ -211,3 +211,29 @@ trivy-sca:
       - epss-hits.json
       - .trivy-cache
     expire_in: 30 days
+
+trivy-sca-enrich:
+  stage: build
+  extends:
+    - .security_job_defaults
+  image:
+    name: ${OSS_PYTHON_IMAGE:-nexus.svo.aero:8345/library/python:3.11.11-slim-bookworm}
+    entrypoint: [""]
+  needs:
+    - job: trivy-sca
+      artifacts: true
+  script:
+    - |
+      set -eu
+      test -f sca.sarif
+      python3 scripts/kev-enrich-sarif.py --in sca.sarif --catalog config/kev/cisa-kev.min.json --hits kev-hits.json
+      python3 scripts/epss-enrich-sarif.py --in sca.sarif --catalog config/epss/epss_scores.min.json.gz --hits epss-hits.json
+      python3 scripts/gate-check.py --control sca --report sca.sarif \
+        --policy "${SECURITY_POLICY:-config/security-gate-policy-adopt.yaml}"
+  artifacts:
+    paths:
+      - sca.sarif
+      - kev-hits.json
+      - epss-hits.json
+    expire_in: 30 days
+  allow_failure: true
