@@ -32,10 +32,16 @@ osa:
   block_direct_critical: true
   block_transitive_critical: false
   reject_latest_tags: true
+  block_on_kev: false
+  warn_epss_threshold: 0.5
+  block_on_high_epss: false
 
 sca:
   mode: warn
   severity_block: [critical, high]
+  block_on_kev: false
+  warn_epss_threshold: 0.5
+  block_on_high_epss: false
 
 container:
   mode: warn

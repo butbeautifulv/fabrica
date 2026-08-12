@@ -54,6 +54,9 @@ def load_policy_section(path: Path, control: str) -> dict:
     section.setdefault("mode", "warn")
     section.setdefault("severity_block", defaults.get("severity_block", ["critical", "high"]))
     section.setdefault("severity_warn", defaults.get("severity_warn", ["medium"]))
+    section.setdefault("block_on_kev", False)
+    section.setdefault("block_on_high_epss", False)
+    section.setdefault("warn_epss_threshold", 0.5)
     return section
 
 
@@ -219,6 +222,77 @@ def parse_report(path: Path) -> list[str]:
     return []
 
 
+def count_kev_hits(path: Path) -> int:
+    """Count SARIF results with properties.cisaKev=true."""
+    if not path.exists() or path.stat().st_size == 0:
+        return 0
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return 0
+    n = 0
+    for run in data.get("runs") or []:
+        for result in run.get("results") or []:
+            if not isinstance(result, dict):
+                continue
+            props = result.get("properties") or {}
+            if isinstance(props, dict) and props.get("cisaKev"):
+                n += 1
+    return n
+
+
+def evaluate_kev(path: Path, policy: dict) -> tuple[bool, str]:
+    """WARN (or block if block_on_kev) when SARIF has CISA KEV hits."""
+    n = count_kev_hits(path)
+    if n <= 0:
+        return True, "kev=0"
+    msg = f"CISA KEV hits in SARIF: {n}"
+    if policy.get("block_on_kev"):
+        return False, msg
+    return True, f"WARN — {msg} (block_on_kev=false)"
+
+
+def count_high_epss(path: Path, threshold: float) -> int:
+    """Count SARIF results with properties.epss >= threshold."""
+    if not path.exists() or path.stat().st_size == 0:
+        return 0
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return 0
+    n = 0
+    for run in data.get("runs") or []:
+        for result in run.get("results") or []:
+            if not isinstance(result, dict):
+                continue
+            props = result.get("properties") or {}
+            if not isinstance(props, dict):
+                continue
+            raw = props.get("epss")
+            try:
+                score = float(raw) if raw is not None and raw != "" else None
+            except (TypeError, ValueError):
+                score = None
+            if score is not None and score >= threshold:
+                n += 1
+    return n
+
+
+def evaluate_epss(path: Path, policy: dict) -> tuple[bool, str]:
+    """WARN (or block if block_on_high_epss) when SARIF has high EPSS hits."""
+    try:
+        threshold = float(policy.get("warn_epss_threshold", 0.5))
+    except (TypeError, ValueError):
+        threshold = 0.5
+    n = count_high_epss(path, threshold)
+    if n <= 0:
+        return True, "epss=0"
+    msg = f"EPSS>={threshold} hits in SARIF: {n}"
+    if policy.get("block_on_high_epss"):
+        return False, msg
+    return True, f"WARN — {msg} (block_on_high_epss=false)"
+
+
 def evaluate(levels: list[str], policy: dict) -> tuple[bool, str]:
     mode = policy.get("mode", "warn")
     if mode in ("info", "optional", "artifact"):
@@ -307,6 +381,18 @@ def main() -> None:
             ok, msg = evaluate(parse_report(args.report), policy)
         else:
             ok, msg = missing_report(args.report, policy)
+
+    if ok and control in ("osa", "sca") and args.report.exists():
+        kev_ok, kev_msg = evaluate_kev(args.report, policy)
+        if kev_msg != "kev=0":
+            msg = f"{msg}; {kev_msg}"
+        if not kev_ok:
+            ok = False
+        epss_ok, epss_msg = evaluate_epss(args.report, policy)
+        if epss_msg != "epss=0":
+            msg = f"{msg}; {epss_msg}"
+        if not epss_ok:
+            ok = False
 
     findings = 0
     if args.control == "sbom":
