@@ -9,8 +9,8 @@
 | **Linters** | Code | IDE, MR | Style + security rules | `T-DEV-SRC` | — | custom / Code-Quality | baseline |
 | **SAST** | Code, Test | IDE, MR, nightly | Исходный код | `T-CODE-SST` | — | `jobs/sast.*` | baseline |
 | **Secret scan** | Code | SCM, MR | Код, IaC | `T-CODE-SECDN` | — | `jobs/secret-scan.*` | baseline |
-| **OSA** | Code | MR | Манифесты зависимостей | `T-CODE-SC` | — | `jobs/osa.*` | B3 |
-| **SCA** | Build | main post-SBOM | Образ контейнера | `T-CODE-SC`, `T-CODE-IMG` | `img` | `jobs/container-scan.*`, `oss/trivy-sca` | C2 |
+| **OSA** | Code | MR | Манифесты зависимостей | `T-CODE-SC` | — | `jobs/osa.*` | B3 · offline KEV/EPSS |
+| **SCA** | Build | main post-SBOM | Образ контейнера | `T-CODE-SC`, `T-CODE-IMG` | `img` | `jobs/container-scan.*`, `oss/trivy-sca` | C2 · offline KEV/EPSS |
 | **IaC scan** | Code, Test | MR, pre-deploy | tf, k8s, helm | `T-PREPROD-MANSEC` | `man` | `jobs/iac-scan.*` | baseline |
 | **Dockerfile** | Build | MR (paths) | Dockerfile | `T-CODE-DOCKERFS` | `Dock` | `jobs/dockerfile-lint.*` | baseline |
 | **SBOM** | Build | Build | CycloneDX | `T-ADI-ART-3-1` | — | `jobs/sbom.*` | C1 |

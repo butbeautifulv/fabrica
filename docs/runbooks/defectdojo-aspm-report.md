@@ -38,24 +38,56 @@ make dojo-aspm-report PRODUCT=data_lake_service MIN_SEVERITY=High PAGE_SIZE=15
 make dojo-aspm-report-fixture PAGE_SIZE=5 MAX_PER_LAYER=50
 ```
 
-Outputs (gitignored):
+Outputs (gitignored / CI artifacts):
 
-- `reports/aspm-report-<product>.html` — open in browser → Print → Save as PDF
-- `reports/aspm-report-<product>.wysiwyg.md` — paste kit for native OSS Report Builder widgets
+| File | Purpose |
+|------|---------|
+| `reports/aspm-report-<product>.html` | Full engagement report (all control layers) |
+| `reports/aspm-report-<product>.<layer>.html` | Partial report for one nonempty layer (`sast-semgrep`, `dast-zap`, …) — share this with an owner focused on that analysis |
+| `reports/aspm-report-<product>.slices.json` | Index of slice files + finding counts |
+| `reports/aspm-report-<product>.wysiwyg.md` | Paste kit for native OSS Report Builder (full only) |
 
-Footer of the HTML lists active flags (`page-size`, `min-severity`, `redact=on`, optional `max-per-layer`).
+CI (`aspm-html-report`) passes `--write-slices` so the job zip contains the full HTML plus one file per nonempty layer.
+
+Local one-off (single layer only, no full sibling):
+
+```bash
+python3 scripts/dojo-render-aspm-report.py \
+  --from-json tests/fixtures/aspm-slices-fixture.json \
+  --only-slice dast-zap \
+  --out /tmp/dast-only.html
+```
+
+Footer of the HTML lists active flags (`page-size`, `min-severity`, `redact=on`, optional `max-per-layer`, `slice=<layer>` on partials).
 
 ## Unit tests
 
 ```bash
-.venv-aspm-report/bin/python -m unittest tests.test_aspm_report_buckets -v
+python3 -m unittest tests.test_aspm_slice_paths tests.test_aspm_html_slices \
+  tests.test_kev_catalog tests.test_kev_aspm_ssvc -v
+```
+
+Offline KEV fixture smoke:
+
+```bash
+python3 scripts/dojo-render-aspm-report.py \
+  --from-json tests/fixtures/aspm-kev-fixture.json \
+  --kev-catalog config/kev/cisa-kev.min.json \
+  --out reports/aspm-report-fixture-kev.html
+# HTML should show chip "KEV 1" and a KEV badge on the Log4Shell finding
 ```
 
 ## Report contents
 
-RU cover + EN body: executive severity/SSVC chips, inline SVG severity bar, POA&M, endpoints, OWASP strip, control layers (`secrets`, `sast-semgrep`, `osa-trivy-fs`, `sca-trivy-image`, `dast-zap`, `api-fuzz-schemathesis`), coverage appendix, DefectDojo deep-links.
+RU cover + EN body: executive severity/SSVC/KEV chips, inline SVG severity bar, POA&M, endpoints, OWASP strip, control layers (`secrets`, `sast-semgrep`, `osa-trivy-fs`, `sca-trivy-image`, `dast-zap`, `api-fuzz-schemathesis`), coverage appendix, DefectDojo deep-links.
 
-SSVC-lite is offline (severity + dynamic + EPSS heuristics) — no live CISA KEV.
+SSVC-lite prioritization (offline):
+
+1. **CISA KEV** (vendored `config/kev/cisa-kev.min.json`) → SSVC **Act** — see [cisa-kev.md](cisa-kev.md)
+2. **EPSS ≥ 0.5** → bump one step — Dojo `epss_score` when present, else offline [epss-offline.md](epss-offline.md) catalog fill-in
+3. **Severity** → base ladder (Critical→Act, High→Attend, …)
+
+No live HTTP to CISA/FIRST in CI; refresh catalogs with `make kev-refresh` / `make epss-refresh` on a networked host.
 
 ### UX behavior (2026-07 polish)
 

@@ -232,7 +232,9 @@ ok "point-copy overlays templates/gitlab/jobs"
 grep -q '^aspm-html-report:' "$ASPM_HTML_JOB" || fail "ASPM HTML job name missing"
 grep -q 'allow_failure: false' "$ASPM_HTML_JOB" || fail "ASPM HTML job must hard-fail"
 grep -q 'reports/aspm-report-\${SERVICE_NAME}.html' "$ASPM_HTML_JOB" || fail "ASPM HTML artifact path missing"
-ok "ASPM HTML job hard-fail + artifacts"
+grep -q -- '--write-slices' "$ASPM_HTML_JOB" || fail "aspm-html job must pass --write-slices"
+grep -q 'slices.json' "$ASPM_HTML_JOB" || fail "aspm-html artifacts must include slices.json"
+ok "ASPM HTML job hard-fail + artifacts + slices"
 
 grep -q '^dfd-diagrams-report:' "$DFD_JOB" || fail "DFD job name missing"
 grep -q 'allow_failure: false' "$DFD_JOB" || fail "DFD job must hard-fail"
@@ -281,6 +283,45 @@ fi
 
 [[ -f scripts/point-copy-mirror.sh ]] || fail "missing point-copy-mirror.sh"
 ok "point-copy-mirror.sh present"
+
+# Offline CISA KEV catalog (ASPM SSVC + future SARIF enrich)
+[[ -f config/kev/cisa-kev.min.json ]] || fail "missing config/kev/cisa-kev.min.json"
+[[ -f scripts/lib/kev_catalog.py ]] || fail "missing scripts/lib/kev_catalog.py"
+[[ -f docs/runbooks/cisa-kev.md ]] || fail "missing docs/runbooks/cisa-kev.md"
+grep -q 'config/kev/cisa-kev.min.json' scripts/point-copy-mirror.sh || fail "point-copy missing KEV catalog"
+grep -q 'scripts/lib/kev_catalog.py' scripts/point-copy-mirror.sh || fail "point-copy missing kev_catalog.py"
+grep -q 'kev-catalog\|kev_catalog\|cisa-kev' scripts/dojo-render-aspm-report.py || \
+  fail "dojo-render must reference KEV catalog"
+grep -q 'kev-catalog' templates/gitlab/jobs/oss/aspm-html-report-mirror.yml || \
+  fail "aspm-html job must pass --kev-catalog"
+grep -q 'kev-enrich-sarif.py' templates/gitlab/jobs/oss/trivy-osa.yml || \
+  fail "trivy-osa must call kev-enrich-sarif.py"
+grep -q 'kev-enrich-sarif.py' templates/gitlab/jobs/oss/trivy-sca.yml || \
+  fail "trivy-sca must call kev-enrich-sarif.py"
+grep -q 'scripts/kev-enrich-sarif.py' scripts/point-copy-mirror.sh || \
+  fail "point-copy missing kev-enrich-sarif.py"
+[[ -f scripts/kev-enrich-sarif.py ]] || fail "missing scripts/kev-enrich-sarif.py"
+ok "CISA KEV offline catalog wired"
+
+# Offline FIRST EPSS
+[[ -f config/epss/epss_scores.min.json.gz ]] || fail "missing config/epss/epss_scores.min.json.gz"
+[[ -f config/epss/epss_meta.json ]] || fail "missing config/epss/epss_meta.json"
+[[ -f scripts/lib/epss_catalog.py ]] || fail "missing scripts/lib/epss_catalog.py"
+[[ -f docs/runbooks/epss-offline.md ]] || fail "missing docs/runbooks/epss-offline.md"
+grep -q 'config/epss/epss_scores.min.json.gz' scripts/point-copy-mirror.sh || fail "point-copy missing EPSS catalog"
+grep -q 'scripts/lib/epss_catalog.py' scripts/point-copy-mirror.sh || fail "point-copy missing epss_catalog.py"
+grep -q 'epss-catalog\|epss_catalog\|epss_scores' scripts/dojo-render-aspm-report.py || \
+  fail "dojo-render must reference EPSS catalog"
+grep -q 'epss-catalog' templates/gitlab/jobs/oss/aspm-html-report-mirror.yml || \
+  fail "aspm-html job must pass --epss-catalog"
+grep -q 'epss-enrich-sarif.py' templates/gitlab/jobs/oss/trivy-osa.yml || \
+  fail "trivy-osa must call epss-enrich-sarif.py"
+grep -q 'epss-enrich-sarif.py' templates/gitlab/jobs/oss/trivy-sca.yml || \
+  fail "trivy-sca must call epss-enrich-sarif.py"
+grep -q 'scripts/epss-enrich-sarif.py' scripts/point-copy-mirror.sh || \
+  fail "point-copy missing epss-enrich-sarif.py"
+[[ -f scripts/epss-enrich-sarif.py ]] || fail "missing scripts/epss-enrich-sarif.py"
+ok "FIRST EPSS offline catalog wired"
 
 if [[ "$FAIL" -ne 0 ]]; then
   echo "validate-mirror-corp: FAILED"

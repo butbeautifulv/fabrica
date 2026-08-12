@@ -54,9 +54,16 @@ FILES=(
   scripts/mirror-baseline-trigger.sh
   scripts/mirror-inventory-services.py
   scripts/lib/mirror_services.py
+  scripts/lib/kev_catalog.py
+  scripts/lib/epss_catalog.py
   scripts/lib/__init__.py
   scripts/dojo-render-aspm-report.py
+  config/kev/cisa-kev.min.json
+  config/epss/epss_scores.min.json.gz
+  config/epss/epss_meta.json
   templates/reports/aspm-engagement-report.html.j2
+  docs/runbooks/cisa-kev.md
+  docs/runbooks/epss-offline.md
   scripts/docker-host-bootstrap.sh
   scripts/registry-resolve-env.sh
   scripts/registry-login.sh
@@ -65,6 +72,8 @@ FILES=(
   scripts/fetch-source-archive.py
   scripts/pip-index-auth.sh
   scripts/gate-check.py
+  scripts/kev-enrich-sarif.py
+  scripts/epss-enrich-sarif.py
   scripts/aspm-export.py
   scripts/deploy-test-k8s.sh
   scripts/cleanup-test-k8s.sh

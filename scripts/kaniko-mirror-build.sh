@@ -14,8 +14,26 @@ NEXUS_DOCKER_PREFIX="${NEXUS_DOCKER_PREFIX:-nexus.svo.aero:8345}"
 NEXUS_DOCKER_GROUP="${NEXUS_DOCKER_GROUP:-nexus.svo.aero:8374}"
 BUILD_BASE_IMAGE="${BUILD_BASE_IMAGE:-${NEXUS_DOCKER_PREFIX}/library/python:3.11.11-slim-bookworm}"
 BUILD_DOCKER_TARGET="${BUILD_DOCKER_TARGET:-source}"
+BUILD_FALLBACK_ALLOW="${BUILD_FALLBACK:-1}"
 echo "[kaniko] BUILD_DOCKER_TARGET=${BUILD_DOCKER_TARGET}"
+echo "[kaniko] BUILD_BASE_IMAGE=${BUILD_BASE_IMAGE}"
+echo "[kaniko] IMAGE_NAME=${BUILD_BASE_IMAGE} (Docker build-arg)"
+echo "[kaniko] BUILD_FALLBACK_ALLOW=${BUILD_FALLBACK_ALLOW} (0=no retag fallback)"
 echo "[kaniko] NEXUS_DOCKER_PREFIX=${NEXUS_DOCKER_PREFIX} NEXUS_DOCKER_GROUP=${NEXUS_DOCKER_GROUP}"
+
+if [ "${MIRROR_REQUIRE_REGISTRY_BASE:-0}" = "1" ]; then
+  case "${BUILD_BASE_IMAGE}" in
+    *map_objects/infra/python_prod*)
+      echo "[kaniko] registry base OK (map_objects/infra/python_prod*)"
+      ;;
+    *)
+      echo "[kaniko] ERROR: MIRROR_REQUIRE_REGISTRY_BASE=1 but BUILD_BASE_IMAGE is not registry python_prod:" >&2
+      echo "[kaniko]   got: ${BUILD_BASE_IMAGE}" >&2
+      echo "[kaniko]   want: …/map_objects/infra/python_prod_3.11 (subsidiary parity)" >&2
+      exit 1
+      ;;
+  esac
+fi
 NEXUS_PYPI_URL="${NEXUS_PYPI_URL:-}"
 if [ -z "$NEXUS_PYPI_URL" ] && [ -n "${PIP_INDEX_URL:-}" ]; then
   NEXUS_PYPI_URL=$(printf '%s' "$PIP_INDEX_URL" | sed -E 's|^https?://||; s|/simple/?$||')
@@ -133,6 +151,51 @@ if [ -n "$PIP_TRUST_NAME" ] && [ -f "$DF" ]; then
   sed -i "s/--trusted-host [^ ]*/--trusted-host ${PIP_TRUST_NAME}/g" "$DF" || true
 fi
 
+# Services that bake ENV PIP_INDEX_URL=…@gitlab…/packages/pypi/simple (e.g. project 673)
+# steal the sole index away from Nexus → "No matching distribution" for public deps (aiodns).
+# Rewrite those lines to Nexus with auth; gismaputils stays via --find-links vendor (below).
+# Note: avoid shell `else` immediately after a python heredoc (busybox ash: `else:: not found`).
+if [ -f "$DF" ] && [ -n "${NEXUS_PYPI_URL:-}" ] && [ -n "${NEXUS_USER:-}" ] && [ -n "${NEXUS_PASSWORD:-}" ]; then
+  if grep -qE 'PIP_INDEX_URL.*(gitlab\.svo\.aero|/packages/pypi/simple)' "$DF" 2>/dev/null; then
+    NEXUS_SIMPLE="${NEXUS_PYPI_URL}"
+    case "$NEXUS_SIMPLE" in
+      http://*|https://*) ;;
+      *) NEXUS_SIMPLE="https://${NEXUS_SIMPLE}" ;;
+    esac
+    case "$NEXUS_SIMPLE" in
+      */simple|*/simple/) ;;
+      *) NEXUS_SIMPLE="${NEXUS_SIMPLE%/}/simple" ;;
+    esac
+    AUTH_INDEX=""
+    if [ -f "$(dirname "$0")/pip-index-auth.sh" ]; then
+      AUTH_INDEX=$(PIP_INDEX_URL="$NEXUS_SIMPLE" NEXUS_USER="$NEXUS_USER" NEXUS_PASSWORD="$NEXUS_PASSWORD" \
+        sh "$(dirname "$0")/pip-index-auth.sh" 2>/dev/null || true)
+    fi
+    if [ -z "${AUTH_INDEX:-}" ] && command -v python3 >/dev/null 2>&1; then
+      AUTH_INDEX=$(PIP_INDEX_URL="$NEXUS_SIMPLE" NEXUS_USER="$NEXUS_USER" NEXUS_PASSWORD="$NEXUS_PASSWORD" \
+        python3 -c 'import os; from urllib.parse import quote,urlparse,urlunparse; u=urlparse(os.environ["PIP_INDEX_URL"]); netloc=quote(os.environ["NEXUS_USER"],safe="")+":"+quote(os.environ["NEXUS_PASSWORD"],safe="")+"@"+u.hostname+(f":{u.port}" if u.port else ""); print(urlunparse((u.scheme,netloc,u.path,u.params,u.query,u.fragment)))')
+    fi
+    if [ -n "${AUTH_INDEX:-}" ] && command -v python3 >/dev/null 2>&1; then
+      KANIKO_AUTH_INDEX="$AUTH_INDEX" KANIKO_DOCKERFILE="$DF" python3 -c '
+import os, re
+df = os.environ["KANIKO_DOCKERFILE"]
+auth = os.environ["KANIKO_AUTH_INDEX"]
+text = open(df, encoding="utf-8", errors="replace").read()
+pat = re.compile(r"^([ \t]*ENV[ \t]+PIP_INDEX_URL[ \t]*(?:=|[ \t]))([^\n]*)$", re.M)
+new, n = pat.subn(lambda m: m.group(1) + "\"" + auth + "\"", text)
+if n:
+    open(df, "w", encoding="utf-8").write(new)
+    print("[kaniko] rewritten PIP_INDEX_URL gitlab->nexus (%d line(s))" % n)
+else:
+    print("[kaniko] WARN: gitlab PIP_INDEX_URL detected but no ENV line rewritten")
+'
+    fi
+    if [ -z "${AUTH_INDEX:-}" ]; then
+      echo "[kaniko] WARN: could not build Nexus auth PIP_INDEX_URL" >&2
+    fi
+  fi
+fi
+
 # gismaputils: do NOT use --extra-index-url (pip would query GitLab for every pkg and fall through to pypi.org SSL).
 # Instead vendor wheels from map_objects-ci Package Registry into build context and --find-links locally.
 GISMAPUTILS_INDEX_HOST="${GISMAPUTILS_INDEX_HOST:-gitlab.svo.aero}"
@@ -227,33 +290,25 @@ PY
     fi
   done
 fi
-# After remapping gismaputils to 0.5.x, old services may import module-level get_token
-# (user_service 0.4.4). Patch health_router to Auth.get_token so the image can boot.
+# After remapping gismaputils to 0.5.x, old services may import module-level get_token.
+# Soft-fail only (never exit 1): SystemExit("WARN…") would kill mobile builds.
 if [ -f "${CONTEXT}/.gismaputils_remapped" ] && command -v python3 >/dev/null 2>&1; then
   CONTEXT="$CONTEXT" python3 - <<'PY'
-import os, re
+import os, re, sys
 from pathlib import Path
 
 ctx = Path(os.environ["CONTEXT"])
-hr = ctx / "src" / "routers" / "health_router.py"
-if not hr.is_file():
-    raise SystemExit(0)
-text = hr.read_text(encoding="utf-8", errors="replace")
-if "from gismaputils.auth.network.auth_requests import get_token" not in text:
-    raise SystemExit(0)
-text2 = text.replace(
-    "from gismaputils.auth.network.auth_requests import get_token",
-    "from gismaputils.auth.network.auth_requests import auth",
-)
-# Multiline call — do NOT use [^)]* (breaks on get_settings()).
-pat = re.compile(
+IMPORT_OLD = "from gismaputils.auth.network.auth_requests import get_token"
+IMPORT_NEW = "from gismaputils.auth.network.auth_requests import auth"
+# Prefer specific multiline (user_service / historical); then looser await get_token(...).
+PAT_STRICT = re.compile(
     r"token\s*=\s*await\s+get_token\(\s*"
     r"url_stand\s*=.*?"
     r"btb_password\s*=\s*get_settings\(\)\.BACK_TO_BACK_PASSWORD\s*,?\s*"
     r"\)",
     re.S,
 )
-repl = (
+REPL_STRICT = (
     "auth.set_config(\n"
     "        url_auth=get_settings().URL_AUTH,\n"
     "        b2b_user=get_settings().BACK_TO_BACK_USER,\n"
@@ -261,52 +316,345 @@ repl = (
     "    )\n"
     "    token = await auth.get_token()"
 )
-text3, n = pat.subn(repl, text2, count=1)
-if n == 0:
-    raise SystemExit(f"[kaniko] WARN: remapped gismaputils but could not patch {hr}")
-hr.write_text(text3, encoding="utf-8")
-print(f"[kaniko] patched {hr.relative_to(ctx)} for gismaputils Auth.get_token compat")
+PAT_LOOSE = re.compile(r"await\s+get_token\s*\(", re.M)
+patched = 0
+for hr in ctx.rglob("*.py"):
+    try:
+        text = hr.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        continue
+    if IMPORT_OLD not in text:
+        continue
+    text2 = text.replace(IMPORT_OLD, IMPORT_NEW)
+    text3, n = PAT_STRICT.subn(REPL_STRICT, text2, count=1)
+    if n == 0:
+        # Import-only / alternate call shapes: auth.get_token() after set_config elsewhere,
+        # or bare await get_token( → auth.get_token(
+        text3, n2 = PAT_LOOSE.subn("await auth.get_token(", text2)
+        if n2 == 0 and "get_token(" in text2:
+            # Last resort: leave auth import; warn but do not fail the build.
+            print(f"[kaniko] WARN: remapped gismaputils; import rewritten but no get_token() call patch in {hr.relative_to(ctx)}", file=sys.stderr)
+            hr.write_text(text2, encoding="utf-8")
+            patched += 1
+            continue
+        if n2 == 0:
+            print(f"[kaniko] WARN: remapped gismaputils; import rewritten only in {hr.relative_to(ctx)}", file=sys.stderr)
+            hr.write_text(text2, encoding="utf-8")
+            patched += 1
+            continue
+    hr.write_text(text3, encoding="utf-8")
+    print(f"[kaniko] patched {hr.relative_to(ctx)} for gismaputils Auth.get_token compat")
+    patched += 1
+if patched == 0:
+    print("[kaniko] WARN: remapped gismaputils but no get_token imports found to patch", file=sys.stderr)
+sys.exit(0)
 PY
 fi
 if ls "$VENDOR_DIR"/*.whl >/dev/null 2>&1; then
   GISMAP_VENDOR_SET=1
 fi
 echo "[kaniko] gismaputils_vendor set=${GISMAP_VENDOR_SET} dir=${VENDOR_DIR}"
-if [ "$GISMAP_VENDOR_SET" = 1 ] && [ -f "$DF" ]; then
-  if command -v python3 >/dev/null 2>&1; then
-    DF="$DF" python3 - <<'PY'
+
+# O5/O6: harden Dockerfile — setuptools pin, poetry inject, skip public apt, PIP_NO_INPUT.
+if [ -f "$DF" ] && command -v python3 >/dev/null 2>&1; then
+  DF="$DF" GISMAP_VENDOR_SET="$GISMAP_VENDOR_SET" PIP_TRUST_NAME="${PIP_TRUST_NAME:-nexus.svo.aero}" \
+  BUILD_BASE_IMAGE="$BUILD_BASE_IMAGE" NEXUS_PYPI_URL="${NEXUS_PYPI_URL:-}" \
+  NEXUS_APT_MIRROR="${NEXUS_APT_MIRROR:-}" \
+  NEXUS_USER="${NEXUS_USER:-}" NEXUS_PASSWORD="${NEXUS_PASSWORD:-}" python3 - <<'PY'
 import os, re
+from urllib.parse import quote
 df = os.environ["DF"]
+vendor = os.environ.get("GISMAP_VENDOR_SET") == "1"
+trust = os.environ.get("PIP_TRUST_NAME") or "nexus.svo.aero"
+base = os.environ.get("BUILD_BASE_IMAGE") or ""
+pypi = (os.environ.get("NEXUS_PYPI_URL") or "").strip().rstrip("/")
+apt_mirror = (os.environ.get("NEXUS_APT_MIRROR") or "").strip()
+nexus_user = os.environ.get("NEXUS_USER") or ""
+nexus_password = os.environ.get("NEXUS_PASSWORD") or ""
 with open(df, "r", encoding="utf-8", errors="replace") as f:
     text = f.read()
-# Ensure COPY vendor into image (after first COPY of requirements if present).
-if "vendor-gismaputils" not in text:
-    # Insert after WORKDIR /app or after first COPY line.
-    lines = text.splitlines(True)
+lines = text.splitlines(True)
+
+# B3: dead corp test registry cannot be pulled from CI — force BUILD_BASE_IMAGE.
+DEAD_HOSTS = ("registry.test.model.svo.aero",)
+if base:
     out = []
-    inserted = False
-    for i, line in enumerate(lines):
+    for line in lines:
+        up = line.upper()
+        if up.startswith("FROM ") or (up.lstrip().startswith("FROM ")):
+            if any(h in line for h in DEAD_HOSTS):
+                # Preserve stage alias: FROM dead AS name → FROM base AS name
+                m = re.match(r"^(\s*FROM\s+)\S+(.*)$", line, re.I)
+                if m:
+                    line = f"{m.group(1)}{base}{m.group(2)}"
+                    if not line.endswith("\n"):
+                        line += "\n"
+                    print(f"[kaniko] rewritten dead FROM → {base}")
+        out.append(line)
+    lines = out
+
+# Vendor COPY + find-links (existing behavior).
+joined = "".join(lines)
+if vendor and "vendor-gismaputils" not in joined:
+    out, inserted = [], False
+    for line in lines:
         out.append(line)
         if not inserted and re.match(r"^COPY\s+", line):
             out.append("COPY ./vendor-gismaputils /app/vendor-gismaputils\n")
             inserted = True
     if not inserted:
         out.insert(0, "COPY ./vendor-gismaputils /app/vendor-gismaputils\n")
-    text = "".join(out)
-# Add --find-links to pip install -r lines (local only; Nexus remains sole index via PIP_INDEX_URL).
-lines = text.splitlines(True)
+    lines = out
+
+# ENV PIP_NO_INPUT after first FROM (avoid interactive gitlab.svo.aero auth EOF).
+if not any("PIP_NO_INPUT" in ln for ln in lines):
+    tmp, inserted_env = [], False
+    for line in lines:
+        tmp.append(line)
+        if not inserted_env and line.upper().startswith("FROM "):
+            tmp.append("ENV PIP_NO_INPUT=1 CI=1 PYTHONUNBUFFERED=1\n")
+            tmp.append(f"ENV PIP_TRUSTED_HOST={trust}\n")
+            inserted_env = True
+    lines = tmp
+elif not any("PIP_TRUSTED_HOST" in ln for ln in lines):
+    tmp, inserted_env = [], False
+    for line in lines:
+        tmp.append(line)
+        if not inserted_env and "PIP_NO_INPUT" in line:
+            tmp.append(f"ENV PIP_TRUSTED_HOST={trust}\n")
+            inserted_env = True
+    lines = tmp
+
+PUBLIC_APT = (
+    "deb.debian.org",
+    "security.debian.org",
+    "archive.ubuntu.com",
+    "security.ubuntu.com",
+    "cdn-fastly.deb.debian.org",
+)
+
+def is_apt_run(ln: str) -> bool:
+    return bool(re.search(r"\bapt(-get)?\b", ln, re.I)) and ln.lstrip().upper().startswith("RUN ")
+
+# P3: skip public apt when no corp mirror (aosint has no egress to debian.org).
+if not apt_mirror:
+    out_apt = []
+    for line in lines:
+        if is_apt_run(line) and (
+            any(h in line for h in PUBLIC_APT)
+            or re.search(r"apt-get\s+(update|install|upgrade)\b", line, re.I)
+        ):
+            # Bare apt-get without local mirror → no-op (base image usually has runtime deps).
+            if any(h in line for h in PUBLIC_APT) or not re.search(
+                r"(nexus\.svo\.aero|mirror\.|/etc/apt/sources)", line, re.I
+            ):
+                print("[kaniko] skip public apt RUN (offline)")
+                out_apt.append('RUN echo "[kaniko] skip public apt (offline)" && true\n')
+                continue
+        out_apt.append(line)
+    lines = out_apt
+else:
+    # Rewrite common public hosts → NEXUS_APT_MIRROR host.
+    host = re.sub(r"^https?://", "", apt_mirror).split("/")[0]
+    out_apt = []
+    for line in lines:
+        new = line
+        for h in PUBLIC_APT:
+            if h in new:
+                new = new.replace(h, host)
+        if new != line:
+            print(f"[kaniko] rewritten apt host → {host}")
+        out_apt.append(new)
+    lines = out_apt
+
+# P2: inject poetry before first poetry RUN (base python_prod often lacks poetry).
+joined = "".join(lines)
+uses_poetry = bool(re.search(r"\bpoetry\b", joined, re.I))
+has_poetry_install = bool(
+    re.search(r"pip\s+install\b[^\n]*\bpoetry\b", joined, re.I)
+)
+if uses_poetry and not has_poetry_install:
+    host_path = pypi if pypi else f"{trust}:8443/repository/srsips-pypi"
+    host_path = re.sub(r"^https?://", "", host_path)
+    if nexus_user and nexus_password:
+        idx_url = (
+            f"https://{quote(nexus_user, safe='')}:{quote(nexus_password, safe='')}"
+            f"@{host_path}/simple"
+        )
+        print("[kaniko] poetry index uses Nexus basic auth")
+    else:
+        idx_url = f"https://{host_path}/simple"
+        print(
+            "[kaniko] WARN: poetry index without auth — Nexus may return empty",
+            file=__import__("sys").stderr,
+        )
+    poetry_run = (
+        f"RUN pip install --no-cache-dir --trusted-host {trust} "
+        f"'poetry<2' -i {idx_url}\n"
+    )
+    out_po, inserted_po = [], False
+    for line in lines:
+        if (
+            not inserted_po
+            and line.lstrip().upper().startswith("RUN ")
+            and re.search(r"\bpoetry\b", line, re.I)
+            and not re.search(r"pip\s+install\b[^\n]*\bpoetry\b", line, re.I)
+        ):
+            out_po.append(poetry_run)
+            inserted_po = True
+            print(f"[kaniko] inserted pip install poetry (<2) index={idx_url}")
+        out_po.append(line)
+    if not inserted_po:
+        # poetry only in COPY/ENV — still insert after first FROM
+        tmp = []
+        for line in lines:
+            tmp.append(line)
+            if not inserted_po and line.upper().startswith("FROM "):
+                tmp.append(poetry_run)
+                inserted_po = True
+                print(f"[kaniko] inserted pip install poetry after FROM index={idx_url}")
+        out_po = tmp
+    lines = out_po
+
+# Stale poetry.lock vs pyproject.toml → "changed significantly"; refresh before install.
+if uses_poetry:
+    out_lock, n_lock = [], 0
+    for line in lines:
+        if (
+            re.search(r"\bpoetry\s+install\b", line, re.I)
+            and not re.search(r"poetry\s+lock\b", line, re.I)
+        ):
+            line = re.sub(
+                r"\bpoetry\s+install\b",
+                "poetry lock --no-update && poetry install",
+                line,
+                count=1,
+                flags=re.I,
+            )
+            n_lock += 1
+        out_lock.append(line)
+    if n_lock:
+        print(f"[kaniko] prepended poetry lock --no-update before poetry install ({n_lock})")
+        lines = out_lock
+
+# Corp Nexus often has custom CA; poetry/requests fail CERTIFICATE_VERIFY_FAILED.
+if uses_poetry:
+    out_cert, n_cert = [], 0
+    for line in lines:
+        if re.search(r"poetry\s+config\s+http-basic\.(\S+)", line, re.I) and "certificates." not in line:
+            line2, n = re.subn(
+                r"poetry\s+config\s+http-basic\.(\S+)\s+(\S+)\s+(\S+)",
+                r"poetry config http-basic.\1 \2 \3 && poetry config certificates.\1.cert false",
+                line,
+                count=1,
+                flags=re.I,
+            )
+            if n:
+                line = line2
+                n_cert += 1
+        out_cert.append(line)
+    if n_cert:
+        print(f"[kaniko] poetry certificates.*.cert false after http-basic ({n_cert})")
+        lines = out_cert
+
+# B2: dedicated setuptools/wheel RUN before any pip install -r (cx_Oracle pkg_resources).
+# setuptools 82+ dropped pkg_resources; pip build-isolation also pulls unconstrained
+# setuptools into /tmp/pip-build-env-* unless PIP_CONSTRAINT is set.
+# Keep base 65.x (already in python_prod) — do NOT --upgrade into 80.x.
+CONSTRAINT_PATH = "/tmp/cxado-pip-constraints.txt"
+if not any("PIP_CONSTRAINT" in ln or "cxado-pip-constraints" in ln for ln in lines):
+    tmp, inserted_c = [], False
+    for line in lines:
+        tmp.append(line)
+        if not inserted_c and (
+            "PIP_TRUSTED_HOST" in line or "PIP_NO_INPUT" in line or line.upper().startswith("FROM ")
+        ):
+            tmp.append(f"RUN printf 'setuptools<70\\n' > {CONSTRAINT_PATH}\n")
+            tmp.append(f"ENV PIP_CONSTRAINT={CONSTRAINT_PATH}\n")
+            inserted_c = True
+            print("[kaniko] inserted PIP_CONSTRAINT setuptools<70")
+            if line.upper().startswith("FROM "):
+                # also ensure PIP_NO_INPUT block already handled above
+                pass
+    lines = tmp
+
+setup_run = (
+    f"RUN pip install --no-cache-dir 'setuptools>=65,<70' wheel "
+    f"--trusted-host {trust}\n"
+)
+
+def pin_setuptools_line(ln: str) -> str:
+    """Rewrite bare setuptools upgrades to setuptools<70 (keep pkg_resources)."""
+    if not re.search(r"pip\s+install\b", ln) or "setuptools" not in ln:
+        return ln
+    if "-r" in ln:
+        return ln
+    if re.search(r"setuptools\s*[<>=]", ln):
+        # Replace any --upgrade setuptools<81 with <70 pin without upgrade
+        new = re.sub(
+            r"--upgrade\s+'setuptools<81'",
+            "'setuptools>=65,<70'",
+            ln,
+        )
+        new = re.sub(
+            r"--upgrade\s+setuptools\b",
+            "'setuptools>=65,<70'",
+            new,
+        )
+        if new != ln:
+            print("[kaniko] rewritten setuptools pin to >=65,<70")
+        return new
+    new = re.sub(
+        r"(--upgrade\s+)?setuptools(\s|$)",
+        r"'setuptools>=65,<70'\2",
+        ln,
+        count=1,
+    )
+    if new != ln:
+        print("[kaniko] pinned setuptools>=65,<70 on existing RUN")
+    return new
+
+lines = [pin_setuptools_line(ln) for ln in lines]
+
+has_setup_run = any(
+    re.search(r"pip\s+install\b.*setuptools", ln)
+    and "-r" not in ln
+    for ln in lines
+)
 out = []
-for line in lines:
-    if re.search(r"pip\s+install\b", line) and "-r" in line and "--find-links" not in line:
-        out.append(line.rstrip("\n") + " --find-links /app/vendor-gismaputils\n")
+inserted_setup = has_setup_run
+for i, line in enumerate(lines):
+    if (
+        not inserted_setup
+        and re.search(r"pip\s+install\b", line)
+        and "-r" in line
+    ):
+        out.append(setup_run)
+        inserted_setup = True
+        print("[kaniko] inserted separate RUN pip install 'setuptools>=65,<70' wheel")
+    if re.search(r"pip\s+install\b", line) and "-r" in line:
+        # Drop redundant setuptools token on the -r line (installed above).
+        line = re.sub(r"\bsetuptools\s+", "", line)
+        if vendor and "--find-links" not in line:
+            line = line.rstrip("\n") + " --find-links /app/vendor-gismaputils\n"
+        if "--trusted-host" not in line:
+            line = line.rstrip("\n") + f" --trusted-host {trust}\n"
+        # Avoid isolated build-env pulling setuptools>=82 without pkg_resources.
+        if "--no-build-isolation" not in line:
+            line = line.rstrip("\n") + " --no-build-isolation\n"
+        out.append(line if line.endswith("\n") else line + "\n")
     else:
         out.append(line)
 with open(df, "w", encoding="utf-8") as f:
     f.writelines(out)
-print("[kaniko] patched Dockerfile for local gismaputils --find-links")
+print(f"[kaniko] patched Dockerfile setuptools+poetry+apt vendor={vendor}")
 PY
-  fi
 fi
+
+# Pass non-interactive pip into kaniko executor environment (defense in depth).
+export PIP_NO_INPUT="${PIP_NO_INPUT:-1}"
+export CI="${CI:-true}"
+export PYTHONUNBUFFERED="${PYTHONUNBUFFERED:-1}"
 
 # URL-encode for build-args without python (minimal: leave as-is if encoding unavailable)
 NEXUS_USER_ENC="${NEXUS_USER:-}"
@@ -339,6 +687,12 @@ if [ "$rc" -eq 0 ]; then
   write_env "$IMAGE_TAG" 0 "$SOURCE_SHA"
   echo "[kaniko] pushed $DESTINATION BUILD_FALLBACK=0"
   exit 0
+fi
+
+if [ "${BUILD_FALLBACK_ALLOW}" = "0" ]; then
+  echo "[kaniko] ERROR: service build failed rc=$rc and BUILD_FALLBACK=0 (parity wave — no base retag)" >&2
+  write_env none 1 "$SOURCE_SHA"
+  exit 1
 fi
 
 echo "[kaniko] WARN: service build failed rc=$rc — fallback FROM $BUILD_BASE_IMAGE"
