@@ -22,6 +22,15 @@ GENERATOR_VERSION = "1.0.0"
 SCRIPT_DIR = Path(__file__).resolve().parent
 FABRICA_ROOT = SCRIPT_DIR.parent
 DEFAULT_TEMPLATE = FABRICA_ROOT / "templates" / "reports" / "aspm-engagement-report.html.j2"
+DEFAULT_KEV_CATALOG = FABRICA_ROOT / "config" / "kev" / "cisa-kev.min.json"
+DEFAULT_EPSS_CATALOG = FABRICA_ROOT / "config" / "epss" / "epss_scores.min.json.gz"
+
+# scripts/ on path so ``lib.*`` imports work when run as a script.
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from lib.epss_catalog import load_epss, lookup as epss_lookup  # noqa: E402
+from lib.kev_catalog import any_in_kev, extract_cves, load_kev  # noqa: E402
 
 CONTROL_LAYER_ORDER = (
     "secrets",
@@ -31,6 +40,22 @@ CONTROL_LAYER_ORDER = (
     "dast-zap",
     "api-fuzz-schemathesis",
 )
+
+
+def slice_out_path(out: Path, layer: str) -> Path:
+    """Derive per-layer HTML path next to the full report ``out``.
+
+    Example: ``aspm-report-svc.html`` + ``sast-semgrep`` → ``aspm-report-svc.sast-semgrep.html``.
+    """
+    safe = str(layer).strip().replace("/", "-").replace(" ", "-")
+    if not safe:
+        raise ValueError("layer name is empty")
+    return out.with_name(f"{out.stem}.{safe}{out.suffix}")
+
+
+def slices_manifest_path(out: Path) -> Path:
+    """Sidecar index next to full HTML: ``aspm-report-svc.slices.json``."""
+    return out.with_name(f"{out.stem}.slices.json")
 
 
 def ssl_ctx() -> ssl.SSLContext | None:
@@ -66,6 +91,35 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="Info",
         choices=["Info", "Low", "Medium", "High", "Critical"],
         help="Drop findings below this severity from the report body",
+    )
+    p.add_argument(
+        "--kev-catalog",
+        type=Path,
+        default=DEFAULT_KEV_CATALOG,
+        help="Offline CISA KEV min JSON (default config/kev/cisa-kev.min.json)",
+    )
+    p.add_argument(
+        "--epss-catalog",
+        type=Path,
+        default=DEFAULT_EPSS_CATALOG,
+        help="Offline EPSS sparse JSON.gz (default config/epss/epss_scores.min.json.gz)",
+    )
+    p.add_argument(
+        "--epss-prefer",
+        choices=["dojo", "catalog"],
+        default="dojo",
+        help="When both Dojo and catalog have EPSS: keep dojo (default) or force catalog",
+    )
+    p.add_argument(
+        "--write-slices",
+        action="store_true",
+        help="Also write one HTML per nonempty control layer next to --out",
+    )
+    p.add_argument(
+        "--only-slice",
+        metavar="LAYER",
+        default="",
+        help="Write only this control layer to --out (no full report; not with --write-slices)",
     )
     p.add_argument("--template", type=Path, default=DEFAULT_TEMPLATE)
     return p.parse_args(argv)
@@ -185,6 +239,39 @@ def shorten_path(path: str, max_len: int = 64) -> str:
     return short
 
 
+def _vulnerability_id_texts(raw: dict[str, Any]) -> list[str]:
+    """Flatten Dojo cve / vulnerability_ids fields into searchable strings."""
+    parts: list[str] = []
+    cve = raw.get("cve")
+    if cve:
+        parts.append(str(cve))
+    vids = raw.get("vulnerability_ids") or raw.get("vulnerability_id") or []
+    if isinstance(vids, str):
+        parts.append(vids)
+    elif isinstance(vids, list):
+        for item in vids:
+            if isinstance(item, dict):
+                parts.append(str(item.get("vulnerability_id") or item.get("cve") or item))
+            elif item is not None:
+                parts.append(str(item))
+    if raw.get("cve_ids"):
+        existing = raw.get("cve_ids")
+        if isinstance(existing, list):
+            parts.extend(str(x) for x in existing)
+        else:
+            parts.append(str(existing))
+    return parts
+
+
+def finding_cve_ids(raw: dict[str, Any]) -> list[str]:
+    """CVE IDs from structured fields plus title/description regex."""
+    return extract_cves(
+        *_vulnerability_id_texts(raw),
+        str(raw.get("title") or ""),
+        str(raw.get("description") or ""),
+    )
+
+
 def normalize_finding(raw: dict[str, Any], *, today: date | None = None) -> dict[str, Any]:
     """Normalize a Dojo finding (or fixture row) into a stable internal shape."""
     today = today or datetime.now(timezone.utc).date()
@@ -218,11 +305,21 @@ def normalize_finding(raw: dict[str, Any], *, today: date | None = None) -> dict
     except (TypeError, ValueError):
         epss_f = None
 
+    epss_pct = raw.get("epss_percentile")
+    try:
+        epss_pct_f = float(epss_pct) if epss_pct is not None and epss_pct != "" else None
+    except (TypeError, ValueError):
+        epss_pct_f = None
+
     cwe = raw.get("cwe")
     try:
         cwe_i = int(cwe) if cwe not in (None, "") else None
     except (TypeError, ValueError):
         cwe_i = None
+
+    cve_ids = finding_cve_ids(raw)
+    in_kev = bool(raw.get("in_kev")) if "in_kev" in raw else False
+    epss_source = str(raw.get("epss_source") or ("dojo" if epss_f is not None else "none"))
 
     fid = raw.get("id") or raw.get("finding_id")
     return {
@@ -244,13 +341,106 @@ def normalize_finding(raw: dict[str, Any], *, today: date | None = None) -> dict
         "dynamic_finding": _as_bool(raw.get("dynamic_finding"), False),
         "static_finding": _as_bool(raw.get("static_finding"), False),
         "epss_score": epss_f,
+        "epss_percentile": epss_pct_f,
+        "epss_source": epss_source,
         "cvssv3_score": raw.get("cvssv3_score") or raw.get("cvssv3"),
         "endpoint": endpoint_display,
         "endpoints": endpoints if isinstance(endpoints, list) else [],
         "date": found.isoformat() if found else "",
         "age_days": max(0, age_days),
         "sla_days_remaining": raw.get("sla_days_remaining"),
+        "cve_ids": cve_ids,
+        "in_kev": in_kev,
     }
+
+
+def apply_kev_flags(
+    findings: list[dict[str, Any]],
+    catalog: frozenset[str] | None,
+) -> list[dict[str, Any]]:
+    """Set ``in_kev`` from offline catalog; no-op if catalog is None."""
+    if catalog is None:
+        return findings
+    out: list[dict[str, Any]] = []
+    for f in findings:
+        row = dict(f)
+        cves = row.get("cve_ids") or []
+        row["in_kev"] = any_in_kev(cves, catalog)
+        out.append(row)
+    return out
+
+
+def load_kev_catalog_optional(path: Path | None) -> frozenset[str] | None:
+    if path is None:
+        return None
+    if not path.is_file():
+        print(f"[aspm-report] WARN KEV catalog missing: {path} (SSVC without KEV)", file=sys.stderr)
+        return None
+    try:
+        return load_kev(path)
+    except Exception as e:  # noqa: BLE001 — report continues without KEV
+        print(f"[aspm-report] WARN KEV catalog load failed: {e}", file=sys.stderr)
+        return None
+
+
+def load_epss_catalog_optional(path: Path | None) -> dict[str, dict[str, float]] | None:
+    if path is None:
+        return None
+    if not path.is_file():
+        print(f"[aspm-report] WARN EPSS catalog missing: {path}", file=sys.stderr)
+        return None
+    try:
+        return load_epss(path)
+    except Exception as e:  # noqa: BLE001
+        print(f"[aspm-report] WARN EPSS catalog load failed: {e}", file=sys.stderr)
+        return None
+
+
+def _best_catalog_epss(
+    cves: list[str],
+    catalog: dict[str, dict[str, float]],
+) -> dict[str, float] | None:
+    best: dict[str, float] | None = None
+    for cve in cves:
+        hit = epss_lookup(cve, catalog)
+        if hit is None:
+            continue
+        if best is None or hit["epss"] > best["epss"]:
+            best = hit
+    return best
+
+
+def apply_epss_fillin(
+    findings: list[dict[str, Any]],
+    catalog: dict[str, dict[str, float]] | None,
+    *,
+    prefer: str = "dojo",
+) -> list[dict[str, Any]]:
+    """Fill epss_score from offline catalog. Dojo-first unless prefer=catalog."""
+    if catalog is None:
+        return findings
+    out: list[dict[str, Any]] = []
+    for f in findings:
+        row = dict(f)
+        dojo_score = row.get("epss_score")
+        has_dojo = isinstance(dojo_score, (int, float))
+        cat_hit = _best_catalog_epss(list(row.get("cve_ids") or []), catalog)
+        if prefer == "catalog" and cat_hit is not None:
+            row["epss_score"] = cat_hit["epss"]
+            row["epss_percentile"] = cat_hit["percentile"]
+            row["epss_source"] = "catalog"
+        elif has_dojo:
+            row["epss_source"] = "dojo"
+            if row.get("epss_percentile") is None and cat_hit is not None:
+                row["epss_percentile"] = cat_hit["percentile"]
+        elif cat_hit is not None:
+            row["epss_score"] = cat_hit["epss"]
+            row["epss_percentile"] = cat_hit["percentile"]
+            row["epss_source"] = "catalog"
+        else:
+            row["epss_source"] = "none"
+        out.append(row)
+    return out
 
 
 def filter_findings(
@@ -486,7 +676,10 @@ def _bump_ssvc(action: str) -> str:
 
 
 def ssvc_lite(finding: dict[str, Any]) -> str:
-    """Offline SSVC-lite: severity + dynamic + EPSS heuristic (no live KEV)."""
+    """Offline SSVC-lite: KEV → Act; else severity + dynamic + EPSS."""
+    if finding.get("in_kev"):
+        return "Act"
+
     sev = finding.get("severity") or "Info"
     if sev == "Critical":
         action = "Act"
@@ -537,11 +730,17 @@ def annotate_ssvc(findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def coverage_matrix(
     findings: list[dict[str, Any]],
     tests: list[dict[str, Any]] | None = None,
+    *,
+    only_titles: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     layers = by_test_title(findings)
     present_titles = {str(t.get("title") or "") for t in (tests or []) if t.get("title")}
+    titles = list(CONTROL_LAYER_ORDER) + (["Other"] if layers.get("Other") else [])
+    if only_titles is not None:
+        allow = set(only_titles)
+        titles = [t for t in titles if t in allow]
     rows = []
-    for title in list(CONTROL_LAYER_ORDER) + (["Other"] if layers.get("Other") else []):
+    for title in titles:
         items = layers.get(title) or []
         rows.append(
             {
@@ -555,14 +754,15 @@ def coverage_matrix(
 
 
 def risk_score(finding: dict[str, Any]) -> float:
-    """Higher = more urgent. Severity weight + age + SSVC + EPSS."""
+    """Higher = more urgent. Severity weight + age + SSVC + EPSS + KEV."""
     sev_w = SEVERITY_WEIGHT.get(str(finding.get("severity") or "Info"), 1)
     age = float(finding.get("age_days") or 0)
     ssvc_w = 4 - SSVC_RANK.get(finding.get("ssvc_action") or ssvc_lite(finding), 3)
     epss = finding.get("epss_score")
     epss_w = float(epss) if isinstance(epss, (int, float)) else 0.0
     overdue_w = 2.0 if finding.get("sla_overdue") else 0.0
-    return sev_w * 10.0 + min(age, 90) * 0.05 + ssvc_w * 3.0 + epss_w * 5.0 + overdue_w
+    kev_w = 12.0 if finding.get("in_kev") else 0.0
+    return sev_w * 10.0 + min(age, 90) * 0.05 + ssvc_w * 3.0 + epss_w * 5.0 + overdue_w + kev_w
 
 
 def build_poam(findings: list[dict[str, Any]], top_n: int = 15) -> list[dict[str, Any]]:
@@ -618,15 +818,24 @@ def analyze_findings(
     tests: list[dict[str, Any]] | None = None,
     *,
     top_n: int = 15,
+    coverage_only_titles: list[str] | None = None,
 ) -> dict[str, Any]:
     annotated = annotate_ssvc(findings)
+    kev_n = sum(1 for f in annotated if f.get("in_kev"))
+    epss_high_n = sum(
+        1
+        for f in annotated
+        if isinstance(f.get("epss_score"), (int, float)) and float(f["epss_score"]) >= 0.5
+    )
     return {
         "findings": annotated,
         "severity_counts": by_severity(annotated),
         "ssvc_counts": ssvc_counts(annotated),
+        "kev_count": kev_n,
+        "epss_high_count": epss_high_n,
         "layers": by_test_title(annotated),
         "owasp": owasp_histogram(annotated),
-        "coverage": coverage_matrix(annotated, tests),
+        "coverage": coverage_matrix(annotated, tests, only_titles=coverage_only_titles),
         "poam": build_poam(annotated, top_n=top_n),
         "top_risks": top_risks(annotated, n=5),
         "endpoints": endpoints_rollup(annotated),
@@ -753,13 +962,29 @@ def _render_finding_card(f: dict[str, Any], public_url: str, escape) -> list[str
     parts.append(f'<article class="finding-card{overdue}">')
     parts.append(
         f'<header><span class="chip {escape(str(f.get("severity")))}">{escape(str(f.get("severity")))}</span> '
-        f'<strong>{escape(str(f.get("title")))}</strong></header>'
+        + (
+            '<span class="chip kev">KEV</span> '
+            if f.get("in_kev")
+            else ""
+        )
+        + f'<strong>{escape(str(f.get("title")))}</strong></header>'
     )
     parts.append('<dl class="finding-meta">')
     parts.append(f"<div><dt>CWE / OWASP</dt><dd>{cwe} / {escape(str(f.get('owasp') or 'Other'))}</dd></div>")
+    cve_disp = ", ".join(str(c) for c in (f.get("cve_ids") or [])[:6]) or "—"
+    parts.append(f"<div><dt>CVE</dt><dd>{escape(cve_disp)}</dd></div>")
+    epss = f.get("epss_score")
+    if isinstance(epss, (int, float)):
+        pct = f.get("epss_percentile")
+        pct_s = f"{float(pct):.2f}" if isinstance(pct, (int, float)) else "—"
+        src = escape(str(f.get("epss_source") or "none"))
+        parts.append(
+            f"<div><dt>EPSS</dt><dd>{float(epss):.3f} (p{pct_s}, src={src})</dd></div>"
+        )
     parts.append(
         f"<div><dt>SSVC</dt><dd>{escape(str(f.get('ssvc_action')))} "
-        f"(SLA {f.get('ssvc_sla_days')}d, age {f.get('age_days')}d)</dd></div>"
+        f"(SLA {f.get('ssvc_sla_days')}d, age {f.get('age_days')}d)"
+        f"{' · CISA KEV' if f.get('in_kev') else ''}</dd></div>"
     )
     if loc:
         parts.append(f"<div><dt>Location</dt><dd><code>{escape(str(loc))}</code></dd></div>")
@@ -949,6 +1174,7 @@ def build_template_context(
     page_size: int = 25,
     max_findings_per_layer: int = 0,
     min_severity: str = "Info",
+    slice_label: str | None = None,
 ) -> dict[str, Any]:
     generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     filters = ["active-only", f"min-severity={min_severity}", f"page-size={page_size}"]
@@ -959,6 +1185,9 @@ def build_template_context(
     if max_findings_per_layer > 0:
         filters.append(f"max-per-layer={max_findings_per_layer}")
     filters.append("redact=on")
+    label = (slice_label or "").strip() or None
+    if label:
+        filters.append(f"slice={label}")
     layer_order = [k for k in CONTROL_LAYER_ORDER if analysis["layers"].get(k)]
     if analysis["layers"].get("Other"):
         layer_order.append("Other")
@@ -968,14 +1197,20 @@ def build_template_context(
         c = sum(1 for f in items if f.get("severity") == "Critical")
         h = sum(1 for f in items if f.get("severity") == "High")
         layer_toc.append({"name": name, "count": len(items), "critical": c, "high": h})
+    report_title = f"ASPM — {bundle['product'].get('name')} — {bundle['engagement'].get('name')}"
+    if label:
+        report_title = f"{report_title} (slice: {label})"
     return {
-        "report_title": f"ASPM — {bundle['product'].get('name')} — {bundle['engagement'].get('name')}",
+        "report_title": report_title,
+        "slice_label": label,
         "product": bundle["product"],
         "engagement": bundle["engagement"],
         "generated_at": generated_at,
         "findings": analysis["findings"],
         "severity_counts": analysis["severity_counts"],
         "ssvc_counts": analysis["ssvc_counts"],
+        "kev_count": analysis.get("kev_count", 0),
+        "epss_high_count": analysis.get("epss_high_count", 0),
         "top_risks": analysis["top_risks"],
         "severity_svg": severity_bar_svg(analysis["severity_counts"]),
         "body_extra": render_body_extra(
@@ -1079,9 +1314,36 @@ def render_wysiwyg_kit(
     return "\n".join(lines)
 
 
+def nonempty_layer_order(analysis: dict[str, Any]) -> list[str]:
+    order = [k for k in CONTROL_LAYER_ORDER if analysis.get("layers", {}).get(k)]
+    if analysis.get("layers", {}).get("Other"):
+        order.append("Other")
+    return order
+
+
+def write_slices_manifest(
+    path: Path,
+    *,
+    product: str,
+    full: Path,
+    slices: list[dict[str, Any]],
+) -> None:
+    doc = {
+        "product": product,
+        "full": str(full.name),
+        "slices": slices,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(doc, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     require_data_source(args)
+
+    only_slice = (args.only_slice or "").strip()
+    if only_slice and args.write_slices:
+        raise SystemExit("[aspm-report] --only-slice and --write-slices are mutually exclusive")
 
     if args.from_json:
         bundle = load_fixture_bundle(args.from_json)
@@ -1101,11 +1363,17 @@ def main(argv: list[str] | None = None) -> int:
     public = (args.dojo_public_url or bundle.get("dojo_base") or os.environ.get("DEFECTDOJO_URL", "")).rstrip(
         "/"
     )
+    kev_catalog = load_kev_catalog_optional(args.kev_catalog)
+    epss_catalog = load_epss_catalog_optional(args.epss_catalog)
     findings = filter_by_min_severity(bundle["findings"], args.min_severity)
+    findings = apply_kev_flags(findings, kev_catalog)
+    findings = apply_epss_fillin(findings, epss_catalog, prefer=args.epss_prefer)
     analysis = analyze_findings(findings, bundle.get("tests"), top_n=args.top_n)
-    ctx = build_template_context(
-        bundle,
-        analysis,
+
+    if not args.template.is_file():
+        raise SystemExit(f"[aspm-report] template not found: {args.template}")
+
+    ctx_kwargs = dict(
         public_url=public,
         include_mitigated=args.include_mitigated,
         include_false_positive=args.include_false_positive,
@@ -1113,8 +1381,34 @@ def main(argv: list[str] | None = None) -> int:
         max_findings_per_layer=args.max_findings_per_layer,
         min_severity=args.min_severity,
     )
-    if not args.template.is_file():
-        raise SystemExit(f"[aspm-report] template not found: {args.template}")
+
+    if only_slice:
+        items = (analysis.get("layers") or {}).get(only_slice) or []
+        if not items:
+            known = ", ".join(nonempty_layer_order(analysis)) or "(none nonempty)"
+            raise SystemExit(
+                f"[aspm-report] --only-slice={only_slice!r} has no findings; "
+                f"nonempty layers: {known}"
+            )
+        slice_analysis = analyze_findings(
+            items,
+            bundle.get("tests"),
+            top_n=args.top_n,
+            coverage_only_titles=[only_slice],
+        )
+        ctx = build_template_context(
+            bundle, slice_analysis, slice_label=only_slice, **ctx_kwargs
+        )
+        html = render_html(args.template, ctx)
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        args.out.write_text(html, encoding="utf-8")
+        print(
+            f"[aspm-report] wrote {args.out} slice={only_slice} "
+            f"findings={len(slice_analysis['findings'])}"
+        )
+        return 0
+
+    ctx = build_template_context(bundle, analysis, slice_label=None, **ctx_kwargs)
     html = render_html(args.template, ctx)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(html, encoding="utf-8")
@@ -1123,6 +1417,43 @@ def main(argv: list[str] | None = None) -> int:
         f"findings={len(analysis['findings'])} ssvc={analysis['ssvc_counts']} "
         f"severity={analysis['severity_counts']}"
     )
+
+    if args.write_slices:
+        manifest_slices: list[dict[str, Any]] = []
+        for layer in nonempty_layer_order(analysis):
+            items = analysis["layers"][layer]
+            slice_analysis = analyze_findings(
+                items,
+                bundle.get("tests"),
+                top_n=args.top_n,
+                coverage_only_titles=[layer],
+            )
+            slice_ctx = build_template_context(
+                bundle, slice_analysis, slice_label=layer, **ctx_kwargs
+            )
+            slice_path = slice_out_path(args.out, layer)
+            slice_path.write_text(render_html(args.template, slice_ctx), encoding="utf-8")
+            crit = sum(1 for f in items if f.get("severity") == "Critical")
+            high = sum(1 for f in items if f.get("severity") == "High")
+            manifest_slices.append(
+                {
+                    "layer": layer,
+                    "path": slice_path.name,
+                    "finding_count": len(items),
+                    "critical": crit,
+                    "high": high,
+                }
+            )
+            print(f"[aspm-report] wrote slice {slice_path} findings={len(items)}")
+        man_path = slices_manifest_path(args.out)
+        write_slices_manifest(
+            man_path,
+            product=str(bundle.get("product", {}).get("name") or ""),
+            full=args.out,
+            slices=manifest_slices,
+        )
+        print(f"[aspm-report] wrote manifest {man_path} slices={len(manifest_slices)}")
+
     if args.wysiwyg:
         kit = render_wysiwyg_kit(bundle, analysis, public_url=public)
         args.wysiwyg.parent.mkdir(parents=True, exist_ok=True)

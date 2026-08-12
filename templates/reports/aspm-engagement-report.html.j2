@@ -73,6 +73,10 @@
   .chip.Low { background: var(--low); }
   .chip.Info { background: var(--info); }
   .chip.ssvc { background: var(--band); }
+  .chip.kev { background: #7a1f2b; }
+  .chip.epss { background: #3d5a80; }
+  .chip.slice { background: #4a5568; }
+  .slice-note { margin: 0.75rem 0 0; max-width: 42rem; opacity: 0.9; font-size: 0.95rem; }
   .legend { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem 1.5rem; font-size: 0.92rem; }
   .legend dt { font-weight: 650; }
   .legend dd { margin: 0.1rem 0 0; color: var(--muted); }
@@ -284,6 +288,12 @@
     <div class="brand">cxado ASPM · Fabrica</div>
     <h1>Отчёт по безопасности приложения</h1>
     <p class="sub">Сводка findings из DefectDojo (OSS). Точка во времени — данные на момент генерации, не живой дашборд.</p>
+    {% if slice_label %}
+    <div class="chips">
+      <span class="chip slice">Slice: {{ slice_label }}</span>
+    </div>
+    <p class="slice-note">Partial control-layer report — share this file when focusing one analysis type. Full engagement report is a sibling artifact without <code>.{{ slice_label }}</code> in the name.</p>
+    {% endif %}
     <dl class="meta-grid">
       <div><dt>Продукт</dt><dd>{{ product.name }}</dd></div>
       <div><dt>Engagement</dt><dd>{{ engagement.name }}</dd></div>
@@ -313,6 +323,12 @@
             {% for action, n in ssvc_counts.items() %}
               {% if n %}<span class="chip ssvc">{{ action }} {{ n }}</span>{% endif %}
             {% endfor %}
+            {% if kev_count %}
+              <span class="chip kev">KEV {{ kev_count }}</span>
+            {% endif %}
+            {% if epss_high_count %}
+              <span class="chip epss">EPSS≥0.5 {{ epss_high_count }}</span>
+            {% endif %}
           </div>
           <h3>Top risks</h3>
           <ul class="risks">
@@ -333,7 +349,7 @@
     <section id="legend">
       <h2>Severity &amp; SLA legend</h2>
       <dl class="legend">
-        <div><dt>Critical / Act</dt><dd>Immediate mitigation — suggested SLA 48 hours (SSVC-lite).</dd></div>
+        <div><dt>Critical / Act</dt><dd>Immediate mitigation — suggested SLA 48 hours (SSVC-lite). CISA KEV hits force Act.</dd></div>
         <div><dt>High / Attend</dt><dd>Escalate and accelerate — suggested SLA 14 days.</dd></div>
         <div><dt>Medium / Track*</dt><dd>Next patch window — suggested SLA 60 days.</dd></div>
         <div><dt>Low–Info / Track</dt><dd>Normal cycle — suggested SLA 90 days.</dd></div>

@@ -1,0 +1,47 @@
+{
+  "product": {"id": 1, "name": "slices_fixture_service"},
+  "engagement": {
+    "id": 1,
+    "name": "CI/CD",
+    "branch_tag": "main",
+    "build_id": "fixture",
+    "commit_hash": "",
+    "version": "",
+    "target_start": "2026-08-01",
+    "target_end": "2026-08-12"
+  },
+  "tests": [
+    {"id": 1, "title": "sast-semgrep"},
+    {"id": 2, "title": "dast-zap"}
+  ],
+  "findings": [
+    {
+      "id": 201,
+      "title": "SAST SQL injection UNIQUE_SLICE_SAST",
+      "severity": "High",
+      "description": "Semgrep finding for slice fixture.",
+      "cwe": 89,
+      "test_title": "sast-semgrep",
+      "active": true,
+      "false_p": false,
+      "is_mitigated": false,
+      "file_path": "app/db.py",
+      "line": 42,
+      "date": "2026-08-01"
+    },
+    {
+      "id": 202,
+      "title": "DAST XSS UNIQUE_SLICE_DAST",
+      "severity": "Medium",
+      "description": "ZAP finding for slice fixture.",
+      "cwe": 79,
+      "test_title": "dast-zap",
+      "active": true,
+      "false_p": false,
+      "is_mitigated": false,
+      "endpoint": "https://example.test/search",
+      "date": "2026-08-02"
+    }
+  ],
+  "source": "fixture"
+}

@@ -29,14 +29,20 @@ aspm-html-report:
       mkdir -p reports
       python3 scripts/dojo-render-aspm-report.py \
         --product "${SERVICE_NAME}" \
-        --out "${ASPM_HTML_OUT}"
+        --kev-catalog config/kev/cisa-kev.min.json \
+        --epss-catalog config/epss/epss_scores.min.json.gz \
+        --out "${ASPM_HTML_OUT}" \
+        --write-slices
       test -s "${ASPM_HTML_OUT}" || { echo "[aspm-html] ERROR: empty report"; exit 1; }
       echo "[aspm-html] wrote ${ASPM_HTML_OUT}"
+      echo "[aspm-html] artifacts:"
+      ls -1 reports/aspm-report-"${SERVICE_NAME}"*.html reports/aspm-report-"${SERVICE_NAME}".slices.json 2>/dev/null || true
   artifacts:
     name: "aspm-html-${SERVICE_NAME}-${CI_PIPELINE_ID}"
     when: always
     paths:
       - reports/aspm-report-*.html
+      - reports/aspm-report-*.slices.json
     expire_in: 30 days
   rules:
     - if: '$CI_COMMIT_TAG =~ /hotfix/i'

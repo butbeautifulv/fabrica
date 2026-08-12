@@ -1,0 +1,29 @@
+{
+  "product": {"id": 1, "name": "epss_fixture_service"},
+  "engagement": {
+    "id": 1,
+    "name": "CI/CD",
+    "branch_tag": "main",
+    "build_id": "fixture",
+    "commit_hash": "",
+    "version": "",
+    "target_start": "2026-08-01",
+    "target_end": "2026-08-12"
+  },
+  "tests": [{"id": 1, "title": "sca-trivy-image"}],
+  "findings": [
+    {
+      "id": 201,
+      "title": "spring4shell CVE-2022-22965",
+      "severity": "Medium",
+      "description": "CVE-2022-22965 without Dojo EPSS — expect catalog fill-in.",
+      "cve": "CVE-2022-22965",
+      "test_title": "sca-trivy-image",
+      "active": true,
+      "false_p": false,
+      "is_mitigated": false,
+      "date": "2026-08-01"
+    }
+  ],
+  "source": "fixture"
+}

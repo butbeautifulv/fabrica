@@ -1,0 +1,44 @@
+{
+  "product": {"id": 1, "name": "kev_fixture_service"},
+  "engagement": {
+    "id": 1,
+    "name": "CI/CD",
+    "branch_tag": "main",
+    "build_id": "fixture",
+    "commit_hash": "",
+    "version": "",
+    "target_start": "2026-08-01",
+    "target_end": "2026-08-12"
+  },
+  "tests": [{"id": 1, "title": "sca-trivy-image"}],
+  "findings": [
+    {
+      "id": 101,
+      "title": "log4j-core CVE-2021-44228 RCE",
+      "severity": "Medium",
+      "description": "Actively exploited Log4Shell CVE-2021-44228 in dependency.",
+      "cve": "CVE-2021-44228",
+      "cwe": 502,
+      "test_title": "sca-trivy-image",
+      "active": true,
+      "false_p": false,
+      "is_mitigated": false,
+      "component_name": "log4j-core",
+      "component_version": "2.14.1",
+      "date": "2026-08-01",
+      "epss_score": 0.2
+    },
+    {
+      "id": 102,
+      "title": "Unrelated high without KEV",
+      "severity": "High",
+      "description": "Generic high finding without a known-exploited CVE.",
+      "test_title": "sca-trivy-image",
+      "active": true,
+      "false_p": false,
+      "is_mitigated": false,
+      "date": "2026-08-02"
+    }
+  ],
+  "source": "fixture"
+}
