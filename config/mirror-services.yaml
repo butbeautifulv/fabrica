@@ -2,17 +2,18 @@
 #
 # Triggers (prefer no hotfix git tags):
 #   - API/web/trigger/schedule with CI vars SERVICE_NAME + SOURCE_REF
-#     (fleet: make mirror-fleet / scripts/mirror-fleet-trigger.py)
+#     (fleet: make mirror-fleet-serial / scripts/mirror-fleet-trigger.py --wait)
 #   - Schedule sync-sources: SHA-change pipelines only
 #   - Release tags: <service_name>/vX.Y.Z  (hotfix* banned in workflow)
 #
 # Fields:
-#   enabled: true|false — fleet/sync skip when false (default true if omitted)
-#   tier: pilot|core|candidate|skip — filter for fleet waves (default core)
-# Optional per-service:
-#   openapi_path, api_base_url, deploy_*, readiness_path, service_port
+#   enabled: true|false — fleet/sync skip when false
+#   tier: pilot|core|candidate|skip
+#   scan_order: int — serial queue sort (lower first)
+# Optional: openapi_path, api_base_url, deploy_*, readiness_path, service_port, notes
 #
-# Wave-3 (2026-07): hwa, data_lake, user (pilots only; core candidates disabled)
+# Base image (subsidiary parity): registry…/map_objects/infra/python_prod_3.11
+# Serial SOP: enable ONE candidate at a time; make mirror-fleet-serial SERVICE=…
 
 services:
   hwa_service:
@@ -21,6 +22,7 @@ services:
     source_ref_fallback: "0.0.4"
     enabled: true
     tier: pilot
+    scan_order: 10
     service_port: "8000"
     deploy_command: "python -m uvicorn src.main:app --host 0.0.0.0 --port 8000"
     deploy_workdir: "/app/code"
@@ -34,6 +36,7 @@ services:
     source_ref_fallback: "0.4.10"
     enabled: true
     tier: pilot
+    scan_order: 20
     service_port: "8000"
     openapi_path: "openapi.json"
     deploy_command: "python -m uvicorn src.main:app --host 0.0.0.0 --port 8000"
@@ -48,6 +51,7 @@ services:
     source_ref_fallback: "0.4.4"
     enabled: true
     tier: pilot
+    scan_order: 30
     service_port: "8000"
     openapi_path: "openapi.json"
     deploy_command: "python -m uvicorn src.main:app --host 0.0.0.0 --port 8000"
@@ -60,20 +64,471 @@ services:
     project_id: "873"
     repo_url: "https://gitlab.svo.aero/dpm/airport_digital_ecosystem/map_objects/dynamic_layer_service.git"
     source_ref_fallback: "0.5.1"
-    enabled: false
+    enabled: true
     tier: candidate
+    scan_order: 40
     service_port: "8000"
+    openapi_path: "openapi.json"
+    deploy_command: "python -m uvicorn src.main:app --host 0.0.0.0 --port 8000"
+    deploy_workdir: "/app/code"
+    readiness_path: "/v1/openapi.json"
+    api_path_prefix: "/v1"
+    deploy_env_file: "config/mirror-deploy/dynamic_layer_service.env"
+    deploy_stubs: "http,mongo"
   event_service:
     project_id: "1259"
     repo_url: "https://gitlab.svo.aero/dpm/airport_digital_ecosystem/map_objects/event_service.git"
     source_ref_fallback: "0.4.1"
-    enabled: false
+    enabled: true
     tier: candidate
+    scan_order: 50
     service_port: "8000"
+    openapi_path: "openapi.json"
+    deploy_command: "python -m uvicorn src.main:app --host 0.0.0.0 --port 8000"
+    deploy_workdir: "/app/code"
+    readiness_path: "/v1/openapi.json"
+    api_path_prefix: "/v1"
+    deploy_env_file: "config/mirror-deploy/event_service.env"
+    deploy_stubs: "http,mongo"
   defects:
     project_id: "1623"
     repo_url: "https://gitlab.svo.aero/dpm/airport_digital_ecosystem/map_objects/defects.git"
     source_ref_fallback: "0.5.7"
-    enabled: false
+    enabled: true
     tier: candidate
+    scan_order: 60
     service_port: "8000"
+    openapi_path: "openapi.json"
+    deploy_command: "python -m uvicorn src.main:app --host 0.0.0.0 --port 8000"
+    deploy_workdir: "/app/code"
+    readiness_path: "/v1/openapi.json"
+    api_path_prefix: "/v1"
+    deploy_env_file: "config/mirror-deploy/defects.env"
+    deploy_stubs: "http,mongo"
+  aircraft_filter:
+    project_id: "764"
+    repo_url: "https://gitlab.svo.aero/dpm/airport_digital_ecosystem/map_objects/aircraft_filter.git"
+    source_ref_fallback: "0.4.14"
+    enabled: true
+    tier: candidate
+    scan_order: 100
+    service_port: "8000"
+    openapi_path: "openapi.json"
+    deploy_command: "python -m uvicorn src.main:app --host 0.0.0.0 --port 8000"
+    deploy_workdir: "/app/code"
+    readiness_path: "/v1/openapi.json"
+    api_path_prefix: "/v1"
+    deploy_env_file: "config/mirror-deploy/aircraft_filter.env"
+    deploy_stubs: "http,mongo,redis"
+  architecture:
+    project_id: "618"
+    repo_url: "https://gitlab.svo.aero/dpm/airport_digital_ecosystem/map_objects/architecture.git"
+    source_ref_fallback: "master"
+    enabled: false
+    tier: skip
+  assignments_satellite:
+    project_id: "1354"
+    repo_url: "https://gitlab.svo.aero/dpm/airport_digital_ecosystem/map_objects/assignments_satellite.git"
+    source_ref_fallback: "0.4.0-0"
+    enabled: true
+    tier: candidate
+    scan_order: 110
+    service_port: "8000"
+    openapi_path: "openapi.json"
+    deploy_command: "python -m uvicorn src.main:app --host 0.0.0.0 --port 8000"
+    deploy_workdir: "/app/code"
+    readiness_path: "/v1/openapi.json"
+    api_path_prefix: "/v1"
+    deploy_env_file: "config/mirror-deploy/assignments_satellite.env"
+    deploy_stubs: "http,mongo"
+  gantt_service:
+    project_id: "828"
+    repo_url: "https://gitlab.svo.aero/dpm/airport_digital_ecosystem/map_objects/gantt_service.git"
+    source_ref_fallback: "1.4.7"
+    enabled: true
+    tier: candidate
+    scan_order: 120
+    service_port: "8000"
+    openapi_path: "openapi.json"
+    deploy_command: "python -m uvicorn src.main:app --host 0.0.0.0 --port 8000"
+    deploy_workdir: "/app/code"
+    readiness_path: "/v1/openapi.json"
+    api_path_prefix: "/v1"
+    deploy_env_file: "config/mirror-deploy/gantt_service.env"
+    deploy_stubs: "http,mongo"
+  gis_mobile_proxy:
+    project_id: "770"
+    repo_url: "https://gitlab.svo.aero/dpm/airport_digital_ecosystem/map_objects/gis_mobile_proxy.git"
+    source_ref_fallback: "0.4.0-2"
+    enabled: true
+    tier: candidate
+    scan_order: 130
+    service_port: "8000"
+    openapi_path: "openapi.json"
+    deploy_command: "python -m uvicorn src.main:app --host 0.0.0.0 --port 8000"
+    deploy_workdir: "/app/code"
+    readiness_path: "/v1/openapi.json"
+    api_path_prefix: "/v1"
+    deploy_env_file: "config/mirror-deploy/gis_mobile_proxy.env"
+    deploy_stubs: "http,mongo,redis"
+  historical_data_service:
+    project_id: "655"
+    repo_url: "https://gitlab.svo.aero/dpm/airport_digital_ecosystem/map_objects/historical_data_service.git"
+    source_ref_fallback: "0.4.5"
+    enabled: true
+    tier: candidate
+    scan_order: 140
+    service_port: "8000"
+    openapi_path: "openapi.json"
+    deploy_command: "python -m uvicorn src.main:app --host 0.0.0.0 --port 8000"
+    deploy_workdir: "/app/code"
+    readiness_path: "/v1/openapi.json"
+    api_path_prefix: "/v1"
+    deploy_env_file: "config/mirror-deploy/historical_data_service.env"
+    deploy_stubs: "http,mongo"
+  history_playback_service:
+    project_id: "659"
+    repo_url: "https://gitlab.svo.aero/dpm/airport_digital_ecosystem/map_objects/history_playback_service.git"
+    source_ref_fallback: "0.4.0-2"
+    enabled: true
+    tier: candidate
+    scan_order: 150
+    service_port: "8000"
+    openapi_path: "openapi.json"
+    deploy_command: "python -m uvicorn src.main:app --host 0.0.0.0 --port 8000"
+    deploy_workdir: "/app/code"
+    readiness_path: "/v1/openapi.json"
+    api_path_prefix: "/v1"
+    deploy_env_file: "config/mirror-deploy/history_playback_service.env"
+    deploy_stubs: "http,mongo"
+  infra:
+    project_id: "698"
+    repo_url: "https://gitlab.svo.aero/dpm/airport_digital_ecosystem/map_objects/infra.git"
+    source_ref_fallback: "master"
+    enabled: false
+    tier: skip
+  map_objects:
+    project_id: "699"
+    repo_url: "https://gitlab.svo.aero/dpm/airport_digital_ecosystem/map_objects/map_objects.git"
+    source_ref_fallback: "master"
+    enabled: false
+    tier: skip
+  map_utils:
+    project_id: "673"
+    repo_url: "https://gitlab.svo.aero/dpm/airport_digital_ecosystem/map_objects/map_utils.git"
+    source_ref_fallback: "0.5.5"
+    enabled: false
+    tier: skip
+  maps_docker_pack:
+    project_id: "697"
+    repo_url: "https://gitlab.svo.aero/dpm/airport_digital_ecosystem/map_objects/maps_docker_pack.git"
+    source_ref_fallback: "master"
+    enabled: false
+    tier: skip
+  maps_seeder:
+    project_id: "890"
+    repo_url: "https://gitlab.svo.aero/dpm/airport_digital_ecosystem/map_objects/maps_seeder.git"
+    source_ref_fallback: "0.5.9"
+    enabled: true
+    tier: candidate
+    scan_order: 270
+    build_docker_target: "source"
+    skip_api_security: true
+    notes: "SIS baseline batch job — no HTTP API"
+  mobile_server:
+    project_id: "1235"
+    repo_url: "https://gitlab.svo.aero/dpm/airport_digital_ecosystem/map_objects/mobile_server.git"
+    source_ref_fallback: "1.0.2"
+    enabled: true
+    tier: candidate
+    scan_order: 160
+    service_port: "8000"
+    openapi_path: "openapi.json"
+    deploy_command: "python -m uvicorn src.main:app --host 0.0.0.0 --port 8000"
+    deploy_workdir: "/app/code"
+    readiness_path: "/v1/openapi.json"
+    api_path_prefix: "/v1"
+    deploy_env_file: "config/mirror-deploy/mobile_server.env"
+    deploy_stubs: "http,mongo"
+  needs_satellite:
+    project_id: "1353"
+    repo_url: "https://gitlab.svo.aero/dpm/airport_digital_ecosystem/map_objects/needs_satellite.git"
+    source_ref_fallback: "0.5.5"
+    enabled: true
+    tier: candidate
+    scan_order: 170
+    service_port: "8000"
+    openapi_path: "openapi.json"
+    deploy_command: "python -m uvicorn src.main:app --host 0.0.0.0 --port 8000"
+    deploy_workdir: "/app/code"
+    readiness_path: "/v1/openapi.json"
+    api_path_prefix: "/v1"
+    deploy_env_file: "config/mirror-deploy/needs_satellite.env"
+    deploy_stubs: "http,mongo,postgres"
+  notes_service:
+    project_id: "684"
+    repo_url: "https://gitlab.svo.aero/dpm/airport_digital_ecosystem/map_objects/notes_service.git"
+    source_ref_fallback: "0.6.1"
+    enabled: true
+    tier: candidate
+    scan_order: 180
+    service_port: "8000"
+    openapi_path: "openapi.json"
+    deploy_command: "python -m uvicorn src.main:app --host 0.0.0.0 --port 8000"
+    deploy_workdir: "/app/code"
+    readiness_path: "/v1/openapi.json"
+    api_path_prefix: "/v1"
+    deploy_env_file: "config/mirror-deploy/notes_service.env"
+    deploy_stubs: "http,mongo"
+  notification_service:
+    project_id: "854"
+    repo_url: "https://gitlab.svo.aero/dpm/airport_digital_ecosystem/map_objects/notification_service.git"
+    source_ref_fallback: "0.4.5"
+    enabled: true
+    tier: candidate
+    scan_order: 190
+    service_port: "8000"
+    openapi_path: "openapi.json"
+    deploy_command: "python -m uvicorn src.main:app --host 0.0.0.0 --port 8000"
+    deploy_workdir: "/app/code"
+    readiness_path: "/v1/openapi.json"
+    api_path_prefix: "/v1"
+    deploy_env_file: "config/mirror-deploy/notification_service.env"
+    deploy_stubs: "http,mongo"
+  omnicomm_connector:
+    project_id: "650"
+    repo_url: "https://gitlab.svo.aero/dpm/airport_digital_ecosystem/map_objects/omnicomm_connector.git"
+    source_ref_fallback: "0.4.5"
+    enabled: true
+    tier: candidate
+    scan_order: 200
+    service_port: "8000"
+    openapi_path: "openapi.json"
+    deploy_command: "python -m uvicorn src.main:app --host 0.0.0.0 --port 8000"
+    deploy_workdir: "/app/code"
+    readiness_path: "/v1/openapi.json"
+    api_path_prefix: "/v1"
+    deploy_env_file: "config/mirror-deploy/omnicomm_connector.env"
+    deploy_stubs: "http,mongo,redis"
+  ornithology_service:
+    project_id: "930"
+    repo_url: "https://gitlab.svo.aero/dpm/airport_digital_ecosystem/map_objects/ornithology_service.git"
+    source_ref_fallback: "0.4.0-7"
+    enabled: true
+    tier: candidate
+    scan_order: 210
+    service_port: "8000"
+    openapi_path: "openapi.json"
+    deploy_command: "python -m uvicorn src.main:app --host 0.0.0.0 --port 8000"
+    deploy_workdir: "/app/code"
+    readiness_path: "/v1/openapi.json"
+    api_path_prefix: "/v1"
+    deploy_env_file: "config/mirror-deploy/ornithology_service.env"
+    deploy_stubs: "http,mongo"
+  static_layers_builder:
+    project_id: "628"
+    repo_url: "https://gitlab.svo.aero/dpm/airport_digital_ecosystem/map_objects/static_layers_builder.git"
+    source_ref_fallback: "0.5.8"
+    enabled: true
+    tier: candidate
+    scan_order: 220
+    service_port: "8000"
+    openapi_path: "openapi.json"
+    deploy_command: "python -m uvicorn src.main:app --host 0.0.0.0 --port 8000"
+    deploy_workdir: "/app/code"
+    readiness_path: "/v1/openapi.json"
+    api_path_prefix: "/v1"
+    deploy_env_file: "config/mirror-deploy/static_layers_builder.env"
+    deploy_stubs: "http,mongo"
+  static_layers_connector:
+    project_id: "593"
+    repo_url: "https://gitlab.svo.aero/dpm/airport_digital_ecosystem/map_objects/static_layers_connector.git"
+    source_ref_fallback: "0.5.10"
+    enabled: true
+    tier: candidate
+    scan_order: 230
+    service_port: "8000"
+    openapi_path: "openapi.json"
+    deploy_command: "python -m uvicorn src.main:app --host 0.0.0.0 --port 8000"
+    deploy_workdir: "/app/code"
+    readiness_path: "/v1/openapi.json"
+    api_path_prefix: "/v1"
+    deploy_env_file: "config/mirror-deploy/static_layers_connector.env"
+    deploy_stubs: "http,mongo"
+  tile_map_service:
+    project_id: "642"
+    repo_url: "https://gitlab.svo.aero/dpm/airport_digital_ecosystem/map_objects/tile_map_service.git"
+    source_ref_fallback: "master"
+    enabled: false
+    tier: skip
+  tiles:
+    project_id: "1286"
+    repo_url: "https://gitlab.svo.aero/dpm/airport_digital_ecosystem/map_objects/tiles.git"
+    source_ref_fallback: "1.0.2"
+    enabled: false
+    tier: skip
+  tow_task_service:
+    project_id: "1313"
+    repo_url: "https://gitlab.svo.aero/dpm/airport_digital_ecosystem/map_objects/tow_task_service.git"
+    source_ref_fallback: "0.4.5"
+    enabled: true
+    tier: candidate
+    scan_order: 240
+    service_port: "8000"
+    openapi_path: "openapi.json"
+    deploy_command: "python -m uvicorn src.main:app --host 0.0.0.0 --port 8000"
+    deploy_workdir: "/app/code"
+    readiness_path: "/v1/openapi.json"
+    api_path_prefix: "/v1"
+    deploy_env_file: "config/mirror-deploy/tow_task_service.env"
+    deploy_stubs: "http,mongo"
+  vega_connector:
+    project_id: "669"
+    repo_url: "https://gitlab.svo.aero/dpm/airport_digital_ecosystem/map_objects/vega_connector.git"
+    source_ref_fallback: "0.4.0-0"
+    enabled: true
+    tier: candidate
+    scan_order: 250
+    service_port: "8000"
+    openapi_path: "openapi.json"
+    deploy_command: "python -m uvicorn src.main:app --host 0.0.0.0 --port 8000"
+    deploy_workdir: "/app/code"
+    readiness_path: "/v1/openapi.json"
+    api_path_prefix: "/v1"
+    deploy_env_file: "config/mirror-deploy/vega_connector.env"
+    deploy_stubs: "http,mongo,redis"
+  weather_proxy:
+    project_id: "1260"
+    repo_url: "https://gitlab.svo.aero/dpm/airport_digital_ecosystem/map_objects/weather_proxy.git"
+    source_ref_fallback: "0.4.6"
+    enabled: true
+    tier: candidate
+    scan_order: 260
+    service_port: "8000"
+    openapi_path: "openapi.json"
+    deploy_command: "python -m uvicorn src.main:app --host 0.0.0.0 --port 8000"
+    deploy_workdir: "/app/code"
+    readiness_path: "/v1/openapi.json"
+    api_path_prefix: "/v1"
+    deploy_env_file: "config/mirror-deploy/weather_proxy.env"
+    deploy_stubs: "http,mongo"
+  mail_service:
+    project_id: "949"
+    repo_url: "https://gitlab.svo.aero/dpm/airport_digital_ecosystem/aodb/mail-service.git"
+    source_ref_fallback: "0.0.14"
+    enabled: true
+    tier: candidate
+    scan_order: 271
+    service_port: "8000"
+    deploy_command: "python -m uvicorn src.main:app --host 0.0.0.0 --port 8000"
+    deploy_workdir: "/code"
+    readiness_path: "/api/mailservice/v1/openapi.json"
+    api_path_prefix: "/api/mailservice/v1"
+    deploy_env_file: "config/mirror-deploy/mail_service.env"
+    deploy_stubs: "http,mongo,postgres"
+    build_docker_target: "source"
+  dictor_panel:
+    project_id: "948"
+    repo_url: "https://gitlab.svo.aero/dpm/airport_digital_ecosystem/sis/dictor_panel.git"
+    source_ref_fallback: "1.3.34"
+    enabled: true
+    tier: candidate
+    scan_order: 272
+    service_port: "8000"
+    deploy_command: "python -m uvicorn src.main:app --host 0.0.0.0 --port 8000"
+    deploy_workdir: "/app/code"
+    readiness_path: "/v1/openapi.json"
+    api_path_prefix: "/v1"
+    deploy_env_file: "config/mirror-deploy/dictor_panel.env"
+    deploy_stubs: "http,mongo,postgres"
+    build_docker_target: "source"
+  core_notification_service:
+    project_id: "1888"
+    repo_url: "https://gitlab.svo.aero/dpm/airport_digital_ecosystem/core/notification_service.git"
+    source_ref_fallback: "2.0.1"
+    enabled: true
+    tier: candidate
+    scan_order: 273
+    service_port: "8000"
+    deploy_command: "python -m uvicorn src.main:app --host 0.0.0.0 --port 8000"
+    deploy_workdir: "/app/code"
+    readiness_path: "/v1/openapi.json"
+    api_path_prefix: "/v1"
+    deploy_env_file: "config/mirror-deploy/core_notification_service.env"
+    deploy_stubs: "http,mongo,redis"
+    build_docker_target: "source"
+  system_log:
+    project_id: "1399"
+    repo_url: "https://gitlab.svo.aero/dpm/airport_digital_ecosystem/sis/system_log.git"
+    source_ref_fallback: "1.3.19"
+    enabled: true
+    tier: candidate
+    scan_order: 274
+    service_port: "8000"
+    deploy_command: "python -m uvicorn src.main:app --host 0.0.0.0 --port 8000"
+    deploy_workdir: "/app/code"
+    readiness_path: "/v1/openapi.json"
+    api_path_prefix: "/v1"
+    deploy_env_file: "config/mirror-deploy/system_log.env"
+    deploy_stubs: "http,mongo"
+    build_docker_target: "source"
+  audio:
+    project_id: "1225"
+    repo_url: "https://gitlab.svo.aero/dpm/airport_digital_ecosystem/sis/audio.git"
+    source_ref_fallback: "1.3.12"
+    enabled: true
+    tier: candidate
+    scan_order: 275
+    build_docker_target: "build"
+    skip_api_security: true
+    notes: "SIS baseline grpc/kafka worker"
+  event_processor:
+    project_id: "945"
+    repo_url: "https://gitlab.svo.aero/dpm/airport_digital_ecosystem/sis/event_processor.git"
+    source_ref_fallback: "1.3.20"
+    enabled: true
+    tier: candidate
+    scan_order: 276
+    build_docker_target: "build"
+    skip_api_security: true
+    notes: "SIS baseline kafka/grpc worker"
+  player:
+    project_id: "1221"
+    repo_url: "https://gitlab.svo.aero/dpm/airport_digital_ecosystem/sis/player.git"
+    source_ref_fallback: "1.3.34"
+    enabled: true
+    tier: candidate
+    scan_order: 277
+    build_docker_target: "source"
+    skip_api_security: true
+    notes: "SIS baseline audio player worker"
+  scheduler:
+    project_id: "976"
+    repo_url: "https://gitlab.svo.aero/dpm/airport_digital_ecosystem/sis/scheduler.git"
+    source_ref_fallback: "1.3.38"
+    enabled: true
+    tier: candidate
+    scan_order: 278
+    build_docker_target: "build"
+    skip_api_security: true
+    notes: "SIS baseline scheduler worker"
+  template:
+    project_id: "1224"
+    repo_url: "https://gitlab.svo.aero/dpm/airport_digital_ecosystem/sis/template.git"
+    source_ref_fallback: "1.3.23"
+    enabled: true
+    tier: candidate
+    scan_order: 279
+    build_docker_target: "build"
+    skip_api_security: true
+    notes: "SIS baseline grpc worker"
+  asis:
+    project_id: "953"
+    repo_url: "https://gitlab.svo.aero/dpm/airport_digital_ecosystem/GUI/fids_group/asis.git"
+    source_ref_fallback: "1.3.21"
+    enabled: true
+    tier: candidate
+    scan_order: 280
+    build_docker_target: "source"
+    skip_api_security: true
+    notes: "SIS wave P8 frontend — semgrep/gitleaks/checkov only"
