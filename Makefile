@@ -1,5 +1,7 @@
 .PHONY: validate validate-quick validate-helm adopt-dry-run diagrams \
-	mirror-fleet-dry mirror-fleet mirror-aspm-html mirror-inventory-stub
+	mirror-fleet-dry mirror-fleet mirror-aspm-html mirror-inventory-stub \
+	kev-refresh kev-lookup test-kev \
+	epss-refresh epss-lookup test-epss
 
 PROFILE ?= shift-left
 PLATFORM ?= github
@@ -8,6 +10,30 @@ WAVE3 := hwa_service data_lake_service user_service
 PRODUCTS ?= $(WAVE3)
 CONCURRENCY ?= 1
 TIER ?=
+SERVICE ?=
+CVE ?= CVE-2021-44228
+
+# Offline CISA KEV (docs/runbooks/cisa-kev.md) - refresh needs network; CI must not fetch.
+kev-refresh:
+	python3 scripts/lib/kev_catalog.py refresh
+
+kev-lookup:
+	python3 scripts/lib/kev_catalog.py lookup "$(CVE)"
+
+test-kev:
+	python3 -m unittest tests.test_kev_catalog tests.test_kev_aspm_ssvc \
+		tests.test_kev_enrich_sarif tests.test_gate_kev -v
+
+# Offline FIRST EPSS (docs/runbooks/epss-offline.md) - refresh needs network; CI must not fetch.
+epss-refresh:
+	python3 scripts/lib/epss_catalog.py refresh
+
+epss-lookup:
+	python3 scripts/lib/epss_catalog.py lookup "$(CVE)"
+
+test-epss:
+	python3 -m unittest tests.test_epss_catalog tests.test_epss_aspm_fillin \
+		tests.test_epss_enrich_sarif tests.test_gate_epss -v
 
 validate:
 	bash scripts/validate-yaml.sh

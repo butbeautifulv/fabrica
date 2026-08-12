@@ -1,0 +1,7 @@
+{
+  "source": "https://epss.empiricalsecurity.com/epss_scores-current.csv.gz",
+  "model": "v2026.06.15",
+  "scoreDate": "2026-08-12",
+  "sparseMin": 0.1,
+  "count": 17295
+}
