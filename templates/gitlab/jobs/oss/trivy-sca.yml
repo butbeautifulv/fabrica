@@ -181,10 +181,16 @@ trivy-sca:
       if command -v python3 >/dev/null 2>&1; then
         SARIF_N=$(python3 -c "import json; d=json.load(open('sca.sarif',encoding='utf-8')); print(sum(len(r.get('results') or []) for r in d.get('runs') or []))")
         echo "[sca] sarif_results=${SARIF_N} sca.sarif_bytes=$(wc -c < sca.sarif | tr -d ' ')"
+        python3 scripts/kev-enrich-sarif.py --in sca.sarif --catalog config/kev/cisa-kev.min.json --hits kev-hits.json || true
+        python3 scripts/epss-enrich-sarif.py --in sca.sarif --catalog config/epss/epss_scores.min.json.gz --hits epss-hits.json || true
         python3 scripts/gate-check.py --control sca --report sca.sarif \
           --policy "${SECURITY_POLICY:-config/security-gate-policy.yaml}"
       elif command -v docker >/dev/null 2>&1 && [ -n "${OSS_PYTHON_IMAGE:-}" ]; then
-        echo "[sca] python3 missing in scanner image — running gate-check via Nexus python image"
+        echo "[sca] python3 missing in scanner image — running kev/epss-enrich+gate-check via Nexus python image"
+        docker run --rm -v "$PWD:/work" -w /work "${OSS_PYTHON_IMAGE}" \
+          python3 scripts/kev-enrich-sarif.py --in sca.sarif --catalog config/kev/cisa-kev.min.json --hits kev-hits.json || true
+        docker run --rm -v "$PWD:/work" -w /work "${OSS_PYTHON_IMAGE}" \
+          python3 scripts/epss-enrich-sarif.py --in sca.sarif --catalog config/epss/epss_scores.min.json.gz --hits epss-hits.json || true
         docker run --rm -v "$PWD:/work" -w /work "${OSS_PYTHON_IMAGE}" \
           python3 scripts/gate-check.py --control sca --report sca.sarif \
           --policy "${SECURITY_POLICY:-config/security-gate-policy.yaml}"
@@ -201,5 +207,7 @@ trivy-sca:
     paths:
       - sca.sarif
       - sbom.cdx.json
+      - kev-hits.json
+      - epss-hits.json
       - .trivy-cache
     expire_in: 30 days

@@ -35,12 +35,18 @@ osa:
   block_direct_critical: true
   block_transitive_critical: false
   reject_latest_tags: true
+  block_on_kev: false
+  warn_epss_threshold: 0.5
+  block_on_high_epss: false
 
 # C2 — SCA: container image after build + SBOM
 sca:
   mode: block
   severity_block: [critical, high]
   registry_periodic_scan: documented
+  block_on_kev: false
+  warn_epss_threshold: 0.5
+  block_on_high_epss: false
 
 # Backward-compatible alias for sca (container image)
 container:

@@ -18,6 +18,20 @@ jobs:
           docker run --rm -v "$PWD:/work" -w /work "$IMAGE" \
             fs . --scanners vuln --severity CRITICAL,HIGH --format sarif --output osa.sarif || true
           sudo chown "$(id -u):$(id -g)" osa.sarif 2>/dev/null || true
+      - name: Enrich SARIF with CISA KEV
+        if: always()
+        run: |
+          python3 scripts/kev-enrich-sarif.py \
+            --in osa.sarif \
+            --catalog config/kev/cisa-kev.min.json \
+            --hits kev-hits.json || true
+      - name: Enrich SARIF with EPSS
+        if: always()
+        run: |
+          python3 scripts/epss-enrich-sarif.py \
+            --in osa.sarif \
+            --catalog config/epss/epss_scores.min.json.gz \
+            --hits epss-hits.json || true
       - uses: ./.github/actions/gate-and-export
         if: always()
         with:

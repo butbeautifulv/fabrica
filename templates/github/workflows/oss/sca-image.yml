@@ -39,6 +39,21 @@ jobs:
             -v "$PWD:/work" -w /work \
             "$TRIVY_IMAGE" image --scanners vuln --severity CRITICAL,HIGH --format sarif \
             --output sca.sarif "${{ inputs.image }}" || true
+          sudo chown "$(id -u):$(id -g)" sca.sarif 2>/dev/null || true
+      - name: Enrich SARIF with CISA KEV
+        if: always()
+        run: |
+          python3 scripts/kev-enrich-sarif.py \
+            --in sca.sarif \
+            --catalog config/kev/cisa-kev.min.json \
+            --hits kev-hits.json || true
+      - name: Enrich SARIF with EPSS
+        if: always()
+        run: |
+          python3 scripts/epss-enrich-sarif.py \
+            --in sca.sarif \
+            --catalog config/epss/epss_scores.min.json.gz \
+            --hits epss-hits.json || true
       - uses: ./.github/actions/gate-and-export
         if: always()
         with:
