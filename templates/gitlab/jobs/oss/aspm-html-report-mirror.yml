@@ -1,23 +1,20 @@
 # Mirror service pipeline — ASPM HTML artifact (downloadable from GitLab job).
 
 aspm-html-report:
-  stage: post-deploy
+  stage: build
   image:
     name: $OSS_PYTHON_IMAGE
     entrypoint: [""]
   needs:
-    - job: dast-zap
-      optional: true
-    - job: api-fuzz-schemathesis
-      optional: true
-    - job: trivy-osa
-      optional: true
-    - job: trivy-sca
-      optional: true
     - job: trivy-osa-enrich
       optional: true
     - job: trivy-sca-enrich
       optional: true
+    - job: trivy-osa
+      optional: true
+    - job: build-image
+      optional: true
+  # Runs in build stage (not post-deploy) so deploy/DAST failure cannot skip the report.
   variables:
     ASPM_HTML_OUT: "reports/aspm-report-${SERVICE_NAME}.html"
   before_script:

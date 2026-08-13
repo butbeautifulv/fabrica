@@ -101,14 +101,16 @@ ok "schemathesis image pin in profile"
 grep -q 'allow_failure: false' "$KANIKO" || fail "build must allow_failure: false"
 ok "build hard-fail"
 
+# allow_failure:true only for cleanup + KEV/EPSS enrich (warn-only metrics jobs)
 python3 - <<'PY' || fail "non-cleanup allow_failure:true in profile"
 from pathlib import Path
 text = Path("templates/profiles/oss-full-service-mirror.gitlab-ci.yml").read_text().splitlines()
+allowed = {"cleanup-runner", "trivy-osa-enrich", "trivy-sca-enrich"}
 job = None
 for i, line in enumerate(text, 1):
     if line and not line.startswith(" ") and not line.startswith("#") and line.endswith(":"):
         job = line[:-1]
-    if "allow_failure: true" in line and job not in ("cleanup-runner",):
+    if "allow_failure: true" in line and job not in allowed:
         raise SystemExit(f"{job}:{i}")
 print("ok")
 PY
