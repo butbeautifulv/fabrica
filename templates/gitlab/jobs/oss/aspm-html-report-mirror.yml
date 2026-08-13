@@ -7,9 +7,17 @@ aspm-html-report:
     entrypoint: [""]
   needs:
     - job: dast-zap
-      optional: false
+      optional: true
     - job: api-fuzz-schemathesis
-      optional: false
+      optional: true
+    - job: trivy-osa
+      optional: true
+    - job: trivy-sca
+      optional: true
+    - job: trivy-osa-enrich
+      optional: true
+    - job: trivy-sca-enrich
+      optional: true
   variables:
     ASPM_HTML_OUT: "reports/aspm-report-${SERVICE_NAME}.html"
   before_script:

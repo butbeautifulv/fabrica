@@ -169,6 +169,13 @@ trivy-osa:
   rules: *mirror_service_rules
   allow_failure: false
 
+trivy-osa-enrich:
+  image:
+    name: $OSS_PYTHON_IMAGE
+    entrypoint: [""]
+  rules: *mirror_service_rules
+  allow_failure: true
+
 checkov-iac:
   image:
     name: $OSS_CHECKOV_IMAGE
@@ -219,6 +226,13 @@ trivy-sca:
       artifacts: true
       optional: false
   allow_failure: false
+
+trivy-sca-enrich:
+  image:
+    name: $OSS_PYTHON_IMAGE
+    entrypoint: [""]
+  rules: *mirror_service_rules
+  allow_failure: true
 
 api-fuzz-schemathesis:
   image:

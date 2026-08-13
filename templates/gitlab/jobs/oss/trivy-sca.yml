@@ -217,7 +217,7 @@ trivy-sca-enrich:
   extends:
     - .security_job_defaults
   image:
-    name: ${OSS_PYTHON_IMAGE:-nexus.svo.aero:8345/library/python:3.11.11-slim-bookworm}
+    name: $OSS_PYTHON_IMAGE
     entrypoint: [""]
   needs:
     - job: trivy-sca
@@ -225,11 +225,17 @@ trivy-sca-enrich:
   script:
     - |
       set -eu
-      test -f sca.sarif
+      echo "[sca-enrich] python=$(command -v python3 || true) pwd=$PWD"
+      ls -la sca.sarif config/kev/cisa-kev.min.json config/epss/epss_scores.min.json.gz 2>&1 || true
+      if [ ! -f sca.sarif ]; then
+        echo "[sca-enrich] ERROR: sca.sarif missing (trivy-sca artifacts not passed)"
+        exit 1
+      fi
       python3 scripts/kev-enrich-sarif.py --in sca.sarif --catalog config/kev/cisa-kev.min.json --hits kev-hits.json
       python3 scripts/epss-enrich-sarif.py --in sca.sarif --catalog config/epss/epss_scores.min.json.gz --hits epss-hits.json
       python3 scripts/gate-check.py --control sca --report sca.sarif \
         --policy "${SECURITY_POLICY:-config/security-gate-policy-adopt.yaml}"
+      ls -la kev-hits.json epss-hits.json
   artifacts:
     paths:
       - sca.sarif
