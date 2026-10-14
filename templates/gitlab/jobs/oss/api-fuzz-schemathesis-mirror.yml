@@ -20,7 +20,7 @@ api-fuzz-schemathesis:
     - job: deploy-test
       artifacts: true
       optional: true
-    - job: trivy-sca
+    - job: trivy-container
       optional: true
   before_script:
     - !reference [.source_checkout, before_script]

@@ -1,5 +1,6 @@
-# C2 — Combined SCA + SBOM (single Trivy job post-build).
-# Shell runners often ignore job image: use docker-run Nexus trivy (same pattern as trivy-osa).
+# Deprecated job names (trivy-sca*). Prefer trivy-container.yml.
+# C2 — Container scan + SBOM (single Trivy image job post-build).
+# Shell runners often ignore job image: use docker-run Nexus trivy (same pattern as trivy-osa-sca).
 # Fail-hard: DB/scan/SBOM failures must exit 1 (no empty-stub fake green).
 
 trivy-sca:
@@ -8,8 +9,11 @@ trivy-sca:
     - .security_job_defaults
     - .registry_auth_env
     - .trivy_job
-  # Block-mode SCA: gate-check enforces; job must not soft-fail.
+  # Block-mode container: gate-check enforces; job must not soft-fail.
   allow_failure: false
+  variables:
+    ASPM_CONTROL: container
+    ASPM_REPORT: container.sarif
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
   needs:
@@ -30,7 +34,7 @@ trivy-sca:
         if command -v trivy >/dev/null 2>&1; then
           trivy "$@"
         elif command -v docker >/dev/null 2>&1; then
-          echo "[sca] trivy not in PATH — docker run ${TRIVY_IMG}"
+          echo "[container] trivy not in PATH — docker run ${TRIVY_IMG}"
           DOCKER_ENV="-e TRIVY_DB_REPOSITORY -e TRIVY_JAVA_DB_REPOSITORY -e TRIVY_INSECURE -e TRIVY_CACHE_DIR=/work/.trivy-cache"
           DOCKER_ENV="$DOCKER_ENV -e TRIVY_USERNAME -e TRIVY_PASSWORD -e DOCKER_CONFIG=/trivy-docker-config"
           DOCKER_VOL="-v $PWD:/work"
@@ -38,7 +42,7 @@ trivy-sca:
             DOCKER_VOL="$DOCKER_VOL -v ${DOCKER_CONFIG}:/trivy-docker-config:ro"
           fi
           if [ -n "${SSL_CERT_FILE:-}" ] && [ -f "$SSL_CERT_FILE" ]; then
-            CA_HOST="/tmp/nexus-ca-for-trivy-sca.crt"
+            CA_HOST="/tmp/nexus-ca-for-trivy-container.crt"
             cp "$SSL_CERT_FILE" "$CA_HOST"
             DOCKER_ENV="$DOCKER_ENV -e SSL_CERT_FILE=/certs/ca.crt"
             DOCKER_VOL="$DOCKER_VOL -v ${CA_HOST}:/certs/ca.crt:ro"
@@ -50,16 +54,16 @@ trivy-sca:
           docker run --rm --user "$(id -u):$(id -g)" --entrypoint trivy $DOCKER_ENV $DOCKER_VOL -w /work "${TRIVY_IMG}" "$@"
           chmod -R u+rwX .trivy-cache 2>/dev/null || true
         else
-          echo "[sca] ERROR: trivy and docker unavailable"
+          echo "[container] ERROR: trivy and docker unavailable"
           return 127
         fi
       }
       if [ "${IMAGE_TAG:-none}" = "none" ]; then
-        echo "[sca] ERROR: No image built (IMAGE_TAG=none) — cannot run SCA/SBOM"
-        echo "[sca] BUILD_FALLBACK=${BUILD_FALLBACK:-unset}"
+        echo "[container] ERROR: No image built (IMAGE_TAG=none) — cannot run container scan/SBOM"
+        echo "[container] BUILD_FALLBACK=${BUILD_FALLBACK:-unset}"
         exit 1
       fi
-      echo "[sca] BUILD_FALLBACK=${BUILD_FALLBACK:-unset} (1=base image retag, not full service build)"
+      echo "[container] BUILD_FALLBACK=${BUILD_FALLBACK:-unset} (1=base image retag, not full service build)"
       for cand in \
         /etc/ssl/certs/nexus/ca.crt \
         "/etc/docker/certs.d/${NEXUS_DOCKER_GROUP:-nexus.svo.aero:8374}/ca.crt" \
@@ -67,7 +71,7 @@ trivy-sca:
       do
         if [ -f "$cand" ]; then
           export SSL_CERT_FILE="$cand"
-          echo "[sca] SSL_CERT_FILE=$SSL_CERT_FILE"
+          echo "[container] SSL_CERT_FILE=$SSL_CERT_FILE"
           break
         fi
       done
@@ -75,9 +79,9 @@ trivy-sca:
       INSECURE_FLAG=""
       if [ "$TRIVY_INSECURE" = "true" ] || [ "$TRIVY_INSECURE" = "1" ]; then
         INSECURE_FLAG="--insecure"
-        echo "[sca] TRIVY_INSECURE=true (corp MITM on Nexus vulndb pull)"
+        echo "[container] TRIVY_INSECURE=true (corp MITM on Nexus vulndb pull)"
       else
-        echo "[sca] TRIVY_INSECURE=${TRIVY_INSECURE}"
+        echo "[container] TRIVY_INSECURE=${TRIVY_INSECURE}"
       fi
       # .registry_auth_env sets TRIVY_USERNAME/PASSWORD = CI_REGISTRY_* (GitLab).
       # Those creds 401 on Nexus :8374 trivy-db. OSA works because it does NOT
@@ -88,11 +92,11 @@ trivy-sca:
       if [ -n "${NEXUS_USER:-}" ] && [ -n "${NEXUS_PASSWORD:-}" ]; then
         export TRIVY_USERNAME="$NEXUS_USER"
         export TRIVY_PASSWORD="$NEXUS_PASSWORD"
-        echo "[sca] TRIVY_USERNAME=NEXUS_USER (override GitLab registry creds for vulndb)"
+        echo "[container] TRIVY_USERNAME=NEXUS_USER (override GitLab registry creds for vulndb)"
       elif [ -n "${TRIVY_USERNAME:-}" ] && [ -n "${TRIVY_PASSWORD:-}" ]; then
-        echo "[sca] WARN: NEXUS_* unset — keeping existing TRIVY_USERNAME (may 401 on Nexus DB)"
+        echo "[container] WARN: NEXUS_* unset — keeping existing TRIVY_USERNAME (may 401 on Nexus DB)"
       else
-        echo "[sca] ERROR: NEXUS_USER/NEXUS_PASSWORD unset — Nexus returns 401 on trivy-db"
+        echo "[container] ERROR: NEXUS_USER/NEXUS_PASSWORD unset — Nexus returns 401 on trivy-db"
         exit 1
       fi
       # Docker config: GitLab image registry (+ Nexus) so trivy image can pull target.
@@ -115,45 +119,45 @@ trivy-sca:
       fi
       AUTH_ENTRIES=$(printf '%s' "$AUTH_ENTRIES" | sed 's/,$//')
       printf '{"auths":{%s}}\n' "$AUTH_ENTRIES" > "$TRIVY_DOCKER_CONFIG_DIR/config.json"
-      echo "[sca] DOCKER_CONFIG=$DOCKER_CONFIG (image registry + nexus auths)"
+      echo "[container] DOCKER_CONFIG=$DOCKER_CONFIG (image registry + nexus auths)"
       IMAGE_REF="${REGISTRY}:${IMAGE_TAG}"
-      echo "[sca] scanning $IMAGE_REF"
+      echo "[container] scanning $IMAGE_REF"
 
       SKIP_DB_FLAGS=""
       if [ -f "${TRIVY_CACHE_DIR}/db/trivy.db" ] || [ -f "${TRIVY_CACHE_DIR}/fanal/fanal.db" ]; then
         SKIP_DB_FLAGS="--skip-db-update --skip-java-db-update"
-        echo "[sca] reuse local trivy cache (skip-db-update)"
+        echo "[container] reuse local trivy cache (skip-db-update)"
       else
-        echo "[sca] no local trivy DB cache — will download from Nexus"
+        echo "[container] no local trivy DB cache — will download from Nexus"
       fi
 
       set +e
       # shellcheck disable=SC2086
       run_trivy image $INSECURE_FLAG $SKIP_DB_FLAGS \
         --scanners vuln --severity CRITICAL,HIGH \
-        --format sarif --output sca.sarif "$IMAGE_REF"
+        --format sarif --output container.sarif "$IMAGE_REF"
       TRIVY_SCAN_RC=$?
       set -e
       if [ "${TRIVY_SCAN_RC:-0}" -ne 0 ] && [ -n "$SKIP_DB_FLAGS" ]; then
-        echo "[sca] scan with skip-db failed rc=${TRIVY_SCAN_RC} — retry with DB download"
+        echo "[container] scan with skip-db failed rc=${TRIVY_SCAN_RC} — retry with DB download"
         set +e
         # shellcheck disable=SC2086
         run_trivy image $INSECURE_FLAG \
-          --scanners vuln --severity CRITICAL,HIGH --format sarif --output sca.sarif "$IMAGE_REF"
+          --scanners vuln --severity CRITICAL,HIGH --format sarif --output container.sarif "$IMAGE_REF"
         TRIVY_SCAN_RC=$?
         set -e
       fi
       if [ "${TRIVY_SCAN_RC:-0}" -ne 0 ]; then
-        echo "[sca] ERROR: trivy image scan failed rc=${TRIVY_SCAN_RC} (DB auth/download or scan)"
+        echo "[container] ERROR: trivy image scan failed rc=${TRIVY_SCAN_RC} (DB auth/download or scan)"
         exit 1
       fi
-      if [ ! -s sca.sarif ]; then
-        echo "[sca] ERROR: sca.sarif missing or empty after successful rc"
+      if [ ! -s container.sarif ]; then
+        echo "[container] ERROR: container.sarif missing or empty after successful rc"
         exit 1
       fi
-      if ! python3 -c "import json; d=json.load(open('sca.sarif',encoding='utf-8')); assert 'runs' in d" 2>/dev/null; then
+      if ! python3 -c "import json; d=json.load(open('container.sarif',encoding='utf-8')); assert 'runs' in d" 2>/dev/null; then
         if command -v python3 >/dev/null 2>&1; then
-          echo "[sca] ERROR: sca.sarif is not valid SARIF JSON"
+          echo "[container] ERROR: container.sarif is not valid SARIF JSON"
           exit 1
         fi
       fi
@@ -165,7 +169,7 @@ trivy-sca:
       TRIVY_SBOM_RC=$?
       set -e
       if [ "${TRIVY_SBOM_RC:-0}" -ne 0 ] || [ ! -s sbom.cdx.json ]; then
-        echo "[sca] sbom with skip-db failed — retry with DB download"
+        echo "[container] sbom with skip-db failed — retry with DB download"
         set +e
         # shellcheck disable=SC2086
         run_trivy image $INSECURE_FLAG \
@@ -174,38 +178,40 @@ trivy-sca:
         set -e
       fi
       if [ "${TRIVY_SBOM_RC:-0}" -ne 0 ] || [ ! -s sbom.cdx.json ]; then
-        echo "[sca] ERROR: SBOM generation failed rc=${TRIVY_SBOM_RC:-1}"
+        echo "[container] ERROR: SBOM generation failed rc=${TRIVY_SBOM_RC:-1}"
         exit 1
       fi
 
       if command -v python3 >/dev/null 2>&1; then
-        SARIF_N=$(python3 -c "import json; d=json.load(open('sca.sarif',encoding='utf-8')); print(sum(len(r.get('results') or []) for r in d.get('runs') or []))")
-        echo "[sca] sarif_results=${SARIF_N} sca.sarif_bytes=$(wc -c < sca.sarif | tr -d ' ')"
-        python3 scripts/kev-enrich-sarif.py --in sca.sarif --catalog config/kev/cisa-kev.min.json --hits kev-hits.json || true
-        python3 scripts/epss-enrich-sarif.py --in sca.sarif --catalog config/epss/epss_scores.min.json.gz --hits epss-hits.json || true
-        python3 scripts/gate-check.py --control sca --report sca.sarif \
+        SARIF_N=$(python3 -c "import json; d=json.load(open('container.sarif',encoding='utf-8')); print(sum(len(r.get('results') or []) for r in d.get('runs') or []))")
+        echo "[container] sarif_results=${SARIF_N} container.sarif_bytes=$(wc -c < container.sarif | tr -d ' ')"
+        python3 scripts/kev-enrich-sarif.py --in container.sarif --catalog config/kev/cisa-kev.min.json --hits kev-hits.json || true
+        python3 scripts/epss-enrich-sarif.py --in container.sarif --catalog config/epss/epss_scores.min.json.gz --hits epss-hits.json || true
+        python3 scripts/gate-check.py --control container --report container.sarif \
           --policy "${SECURITY_POLICY:-config/security-gate-policy.yaml}"
       elif command -v docker >/dev/null 2>&1 && [ -n "${OSS_PYTHON_IMAGE:-}" ]; then
-        echo "[sca] python3 missing in scanner image — running kev/epss-enrich+gate-check via Nexus python image"
+        echo "[container] python3 missing in scanner image — running kev/epss-enrich+gate-check via Nexus python image"
         docker run --rm -v "$PWD:/work" -w /work "${OSS_PYTHON_IMAGE}" \
-          python3 scripts/kev-enrich-sarif.py --in sca.sarif --catalog config/kev/cisa-kev.min.json --hits kev-hits.json || true
+          python3 scripts/kev-enrich-sarif.py --in container.sarif --catalog config/kev/cisa-kev.min.json --hits kev-hits.json || true
         docker run --rm -v "$PWD:/work" -w /work "${OSS_PYTHON_IMAGE}" \
-          python3 scripts/epss-enrich-sarif.py --in sca.sarif --catalog config/epss/epss_scores.min.json.gz --hits epss-hits.json || true
+          python3 scripts/epss-enrich-sarif.py --in container.sarif --catalog config/epss/epss_scores.min.json.gz --hits epss-hits.json || true
         docker run --rm -v "$PWD:/work" -w /work "${OSS_PYTHON_IMAGE}" \
-          python3 scripts/gate-check.py --control sca --report sca.sarif \
+          python3 scripts/gate-check.py --control container --report container.sarif \
           --policy "${SECURITY_POLICY:-config/security-gate-policy.yaml}"
-      elif [ -s sca.sarif ] && echo "${SECURITY_POLICY:-}" | grep -q adopt; then
+      elif [ -s container.sarif ] && echo "${SECURITY_POLICY:-}" | grep -q adopt; then
         # K8s trivy image has no python; no docker socket. Adopt policy: SARIF evidence enough.
-        echo "[sca] WARN: gate-check skipped (no python/docker in corp trivy image); sca.sarif produced"
+        echo "[container] WARN: gate-check skipped (no python/docker in corp trivy image); container.sarif produced"
       else
-        echo "[sca] ERROR: python3 unavailable for gate-check"
+        echo "[container] ERROR: python3 unavailable for gate-check"
         exit 1
       fi
-      echo "[sca] sbom.cdx.json_bytes=$(wc -c < sbom.cdx.json | tr -d ' ')"
+      echo "[container] sbom.cdx.json_bytes=$(wc -c < sbom.cdx.json | tr -d ' ')"
+  after_script:
+    - sh scripts/aspm-export-ci.sh
   artifacts:
     when: always
     paths:
-      - sca.sarif
+      - container.sarif
       - sbom.cdx.json
       - kev-hits.json
       - epss-hits.json
@@ -219,26 +225,31 @@ trivy-sca-enrich:
   image:
     name: $OSS_PYTHON_IMAGE
     entrypoint: [""]
+  variables:
+    ASPM_CONTROL: container
+    ASPM_REPORT: container.sarif
   needs:
     - job: trivy-sca
       artifacts: true
   script:
     - |
       set -eu
-      echo "[sca-enrich] python=$(command -v python3 || true) pwd=$PWD"
-      ls -la sca.sarif config/kev/cisa-kev.min.json config/epss/epss_scores.min.json.gz 2>&1 || true
-      if [ ! -f sca.sarif ]; then
-        echo "[sca-enrich] ERROR: sca.sarif missing (trivy-sca artifacts not passed)"
+      echo "[container-enrich] python=$(command -v python3 || true) pwd=$PWD"
+      ls -la container.sarif config/kev/cisa-kev.min.json config/epss/epss_scores.min.json.gz 2>&1 || true
+      if [ ! -f container.sarif ]; then
+        echo "[container-enrich] ERROR: container.sarif missing (trivy-sca artifacts not passed)"
         exit 1
       fi
-      python3 scripts/kev-enrich-sarif.py --in sca.sarif --catalog config/kev/cisa-kev.min.json --hits kev-hits.json
-      python3 scripts/epss-enrich-sarif.py --in sca.sarif --catalog config/epss/epss_scores.min.json.gz --hits epss-hits.json
-      python3 scripts/gate-check.py --control sca --report sca.sarif \
+      python3 scripts/kev-enrich-sarif.py --in container.sarif --catalog config/kev/cisa-kev.min.json --hits kev-hits.json
+      python3 scripts/epss-enrich-sarif.py --in container.sarif --catalog config/epss/epss_scores.min.json.gz --hits epss-hits.json
+      python3 scripts/gate-check.py --control container --report container.sarif \
         --policy "${SECURITY_POLICY:-config/security-gate-policy-adopt.yaml}"
       ls -la kev-hits.json epss-hits.json
+  after_script:
+    - sh scripts/aspm-export-ci.sh
   artifacts:
     paths:
-      - sca.sarif
+      - container.sarif
       - kev-hits.json
       - epss-hits.json
     expire_in: 30 days

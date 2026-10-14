@@ -3,7 +3,7 @@ changelog:
   - phase: execution
     note: gate-check.py, linters B6, profiles, hardening
   - phase: v1.4
-    note: split OSA (manifests MR) vs SCA (container image post-SBOM)
+    note: rename osa→osa-sca (composition), sca→container (image scan)
   - phase: A2
     note: Initial defaults
   - phase: B1
@@ -29,7 +29,17 @@ sast:
   main_scope: full
   ignore_files_require_review: true
 
-# B3 — OSA: dependency manifests in repo (MR / Code stage)
+# B3 — OSA-SCA: open-source / software composition (deps in source)
+osa-sca:
+  mode: block
+  block_direct_critical: true
+  block_transitive_critical: false
+  reject_latest_tags: true
+  block_on_kev: false
+  warn_epss_threshold: 0.5
+  block_on_high_epss: false
+
+# Deprecated alias → osa-sca (consumers mid-migration)
 osa:
   mode: block
   block_direct_critical: true
@@ -39,8 +49,8 @@ osa:
   warn_epss_threshold: 0.5
   block_on_high_epss: false
 
-# C2 — SCA: container image after build + SBOM
-sca:
+# C2 — Container scan: built image (OS + app packages in image)
+container:
   mode: block
   severity_block: [critical, high]
   registry_periodic_scan: documented
@@ -48,11 +58,14 @@ sca:
   warn_epss_threshold: 0.5
   block_on_high_epss: false
 
-# Backward-compatible alias for sca (container image)
-container:
+# Deprecated alias → container
+sca:
   mode: block
   severity_block: [critical, high]
   registry_periodic_scan: documented
+  block_on_kev: false
+  warn_epss_threshold: 0.5
+  block_on_high_epss: false
 
 iac:
   mode: block

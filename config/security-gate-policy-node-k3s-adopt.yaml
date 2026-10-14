@@ -1,0 +1,100 @@
+version: "1.0"
+changelog:
+  - phase: adopt
+    note: oss-full-node-k3s day-1 — secrets/forbidden_files block; other scanners warn
+
+defaults:
+  severity_block: [critical, high]
+  severity_warn: [medium]
+  severity_info: [low]
+
+secrets:
+  mode: block
+  block_on_verified: false
+  max_findings: 0
+  artifact_retention_days: 30
+
+sast:
+  mode: warn
+  severity_block: [critical, high]
+  severity_warn: [medium]
+  mr_scope: diff
+  main_scope: full
+  ignore_files_require_review: true
+
+bandit:
+  mode: warn
+  severity_block: [critical, high]
+  severity_warn: [medium]
+
+osa-sca:
+  mode: warn
+  block_direct_critical: true
+  block_transitive_critical: false
+  reject_latest_tags: true
+  block_on_kev: false
+  warn_epss_threshold: 0.5
+  block_on_high_epss: false
+
+# Deprecated alias → osa-sca
+osa:
+  mode: warn
+  block_direct_critical: true
+  block_transitive_critical: false
+  reject_latest_tags: true
+  block_on_kev: false
+  warn_epss_threshold: 0.5
+  block_on_high_epss: false
+
+container:
+  mode: warn
+  severity_block: [critical, high]
+  block_on_kev: false
+  warn_epss_threshold: 0.5
+  block_on_high_epss: false
+
+# Deprecated alias → container
+sca:
+  mode: warn
+  severity_block: [critical, high]
+  block_on_kev: false
+  warn_epss_threshold: 0.5
+  block_on_high_epss: false
+
+iac:
+  mode: warn
+  severity_block: [critical, high]
+
+dockerfile:
+  mode: warn
+  severity_block: [critical, high]
+
+linters:
+  mode: warn
+  max_findings: 50
+
+dast:
+  mode: warn
+
+fuzzing:
+  mode: warn
+  # Missing junit is fail-hard in run-schemathesis-mirror.sh (not this mode).
+
+sec_func_tests:
+  mode: warn
+
+# I1 — Host/OS SCAP (adopt: warn, thresholds not stricter than strict policy)
+infra:
+  mode: warn
+  summarize_threshold: 1500
+  failed_threshold: 1000
+  strict_summarize: false
+  xccdf_failed_threshold: 50
+  waivers_path: infra/scap/waivers.yaml
+  report: reports/summary_infra.json
+  trigger: manual_or_schedule
+  artifact_retention_days: 30
+
+forbidden_files:
+  mode: block
+  severity_block: [critical, high]

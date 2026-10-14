@@ -1,0 +1,87 @@
+# OSS profile validate stage — Bun/TypeScript (lint, typecheck, bun test)
+
+.workflow_rules:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+.before_script_bun: &before_script_bun
+  - |
+    set -eu
+    BUN_VERSION="${BUN_VERSION:-1.4.0}"
+    if ! command -v bun >/dev/null 2>&1; then
+      if [ -n "${NPM_REGISTRY:-}" ]; then
+        npm config set registry "${NPM_REGISTRY}"
+      fi
+      npm install -g "bun@${BUN_VERSION}"
+    fi
+    bun --version
+    if [ ! -f package.json ]; then
+      echo "Skip Bun job — no package.json"
+      exit 0
+    fi
+    if [ -f bun.lock ] || [ -f bun.lockb ]; then
+      bun install --frozen-lockfile
+    else
+      bun install
+    fi
+
+lint:
+  stage: validate
+  image: ${OSS_NODE_IMAGE:-node:20-bookworm}
+  extends: .workflow_rules
+  cache:
+    key: bun-${CI_COMMIT_REF_SLUG}
+    paths:
+      - node_modules/
+      - .bun/
+  before_script: *before_script_bun
+  script:
+    - |
+      set -eu
+      if node -e "const p=require('./package.json'); process.exit(p.scripts&&(p.scripts.lint||p.scripts.eslint)?0:1)"; then
+        bun run lint
+      else
+        echo "Skip lint — add bun run lint to package.json"
+      fi
+  allow_failure: true
+
+typecheck:
+  stage: validate
+  image: ${OSS_NODE_IMAGE:-node:20-bookworm}
+  extends: .workflow_rules
+  cache:
+    key: bun-${CI_COMMIT_REF_SLUG}
+    paths:
+      - node_modules/
+      - .bun/
+  before_script: *before_script_bun
+  script:
+    - |
+      set -eu
+      if node -e "const p=require('./package.json'); process.exit(p.scripts&&p.scripts.typecheck?0:1)"; then
+        bun run typecheck
+      else
+        echo "Skip typecheck — add bun run typecheck to package.json"
+      fi
+  allow_failure: true
+
+unit-test:
+  stage: test
+  image: ${OSS_NODE_IMAGE:-node:20-bookworm}
+  extends: .workflow_rules
+  cache:
+    key: bun-${CI_COMMIT_REF_SLUG}
+    paths:
+      - node_modules/
+      - .bun/
+  before_script: *before_script_bun
+  script:
+    - |
+      set -eu
+      if node -e "const p=require('./package.json'); const s=p.scripts||{}; process.exit(s.test||s['test:coverage']?0:1)"; then
+        bun run test
+      else
+        echo "Skip tests — add bun test / package.json scripts.test"
+      fi
+  allow_failure: true

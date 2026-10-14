@@ -6,7 +6,7 @@
 # Env out: SERVICE_NAME SOURCE_REPO_URL SOURCE_PROJECT_ID SOURCE_REF_FALLBACK
 #          DEFECTDOJO_PRODUCT_NAME OPENAPI_PATH API_BASE_URL SERVICE_PORT
 #          DEPLOY_COMMAND DEPLOY_WORKDIR READINESS_PATH DEPLOY_ENV_FILE
-#          DEPLOY_STUBS API_PATH_PREFIX (optional)
+#          DEPLOY_STUBS API_PATH_PREFIX SKIP_API_SECURITY SKIP_DEPLOY (optional)
 set -eu
 
 PRINT=0
@@ -45,6 +45,7 @@ _awk_extract() {
     BEGIN {
       in_svc=0; pid=""; url=""; fb=""; oapi=""; abase=""; sport=""
       dcmd=""; dwd=""; rpath=""; denv=""; dstubs=""; apref=""
+      skipapi=""; btarget=""
     }
     /^services:[[:space:]]*$/ { next }
     /^[[:space:]]+[A-Za-z0-9_]+:[[:space:]]*$/ {
@@ -100,9 +101,17 @@ _awk_extract() {
       line=$0; sub(/.*api_path_prefix:[[:space:]]*/, "", line)
       gsub(/["'\'']/, "", line); gsub(/[[:space:]]+$/, "", line); apref=line
     }
+    in_svc && /skip_api_security:/ && $0 !~ /^[[:space:]]*#/ {
+      line=$0; sub(/.*skip_api_security:[[:space:]]*/, "", line)
+      gsub(/["'\'']/, "", line); gsub(/[[:space:]]+$/, "", line); skipapi=line
+    }
+    in_svc && /build_docker_target:/ && $0 !~ /^[[:space:]]*#/ {
+      line=$0; sub(/.*build_docker_target:[[:space:]]*/, "", line)
+      gsub(/["'\'']/, "", line); gsub(/[[:space:]]+$/, "", line); btarget=line
+    }
     END {
       if (pid == "" || url == "") { exit 2 }
-      print pid "\t" url "\t" fb "\t" oapi "\t" abase "\t" sport "\t" dcmd "\t" dwd "\t" rpath "\t" denv "\t" dstubs "\t" apref
+      print pid "\t" url "\t" fb "\t" oapi "\t" abase "\t" sport "\t" dcmd "\t" dwd "\t" rpath "\t" denv "\t" dstubs "\t" apref "\t" skipapi "\t" btarget
     }
   ' "$REG"
 }
@@ -124,7 +133,26 @@ _YAML_READINESS_PATH=$(printf '%s' "$ROW" | cut -f9)
 _YAML_DEPLOY_ENV_FILE=$(printf '%s' "$ROW" | cut -f10)
 _YAML_DEPLOY_STUBS=$(printf '%s' "$ROW" | cut -f11)
 _YAML_API_PATH_PREFIX=$(printf '%s' "$ROW" | cut -f12)
+_YAML_SKIP_API=$(printf '%s' "$ROW" | cut -f13)
+_YAML_BUILD_TARGET=$(printf '%s' "$ROW" | cut -f14)
 DEFECTDOJO_PRODUCT_NAME="$SERVICE_NAME"
+
+SKIP_API_SECURITY="${SKIP_API_SECURITY:-}"
+if [ -z "$SKIP_API_SECURITY" ] && [ -n "${_YAML_SKIP_API:-}" ]; then
+  case "${_YAML_SKIP_API}" in
+    true|True|TRUE|1|yes|Yes|YES) SKIP_API_SECURITY=true ;;
+    *) SKIP_API_SECURITY=false ;;
+  esac
+fi
+
+if [ -n "${_YAML_BUILD_TARGET:-}" ] && [ -z "${BUILD_DOCKER_TARGET:-}" ]; then
+  BUILD_DOCKER_TARGET="$_YAML_BUILD_TARGET"
+fi
+
+SKIP_DEPLOY="${SKIP_DEPLOY:-false}"
+if [ "$SKIP_API_SECURITY" = "true" ]; then
+  SKIP_DEPLOY=true
+fi
 
 if [ -z "${OPENAPI_PATH:-}" ] && [ -n "${_YAML_OPENAPI:-}" ]; then
   OPENAPI_PATH="$_YAML_OPENAPI"
@@ -148,6 +176,10 @@ if [ -z "${READINESS_PATH:-}" ] && [ -n "${_YAML_READINESS_PATH:-}" ]; then
 fi
 if [ -z "${DEPLOY_ENV_FILE:-}" ] && [ -n "${_YAML_DEPLOY_ENV_FILE:-}" ]; then
   DEPLOY_ENV_FILE="$_YAML_DEPLOY_ENV_FILE"
+fi
+if [ -n "${DEPLOY_ENV_FILE:-}" ] && [ ! -f "$DEPLOY_ENV_FILE" ]; then
+  echo "[resolve] WARN: deploy_env_file missing on disk: $DEPLOY_ENV_FILE — SKIP_DEPLOY=true" >&2
+  SKIP_DEPLOY=true
 fi
 if [ -z "${DEPLOY_STUBS:-}" ] && [ -n "${_YAML_DEPLOY_STUBS:-}" ]; then
   DEPLOY_STUBS="$_YAML_DEPLOY_STUBS"
@@ -200,8 +232,13 @@ fi
 if [ -n "${API_PATH_PREFIX:-}" ]; then
   export API_PATH_PREFIX
 fi
+if [ -n "${BUILD_DOCKER_TARGET:-}" ]; then
+  export BUILD_DOCKER_TARGET
+fi
+export SKIP_API_SECURITY="${SKIP_API_SECURITY:-false}"
+export SKIP_DEPLOY="${SKIP_DEPLOY:-false}"
 
-echo "[resolve] service=$SERVICE_NAME project_id=$SOURCE_PROJECT_ID product=$DEFECTDOJO_PRODUCT_NAME SOURCE_REF=${SOURCE_REF:-none} fallback=${SOURCE_REF_FALLBACK:-none}"
+echo "[resolve] service=$SERVICE_NAME project_id=$SOURCE_PROJECT_ID product=$DEFECTDOJO_PRODUCT_NAME SOURCE_REF=${SOURCE_REF:-none} fallback=${SOURCE_REF_FALLBACK:-none} skip_api=$SKIP_API_SECURITY skip_deploy=$SKIP_DEPLOY"
 
 if [ "$PRINT" = 1 ]; then
   printf 'export SERVICE_NAME=%s\n' "$SERVICE_NAME"
@@ -232,5 +269,10 @@ if [ "$PRINT" = 1 ]; then
   if [ -n "${API_PATH_PREFIX:-}" ]; then
     printf 'export API_PATH_PREFIX=%s\n' "$API_PATH_PREFIX"
   fi
+  if [ -n "${BUILD_DOCKER_TARGET:-}" ]; then
+    printf 'export BUILD_DOCKER_TARGET=%s\n' "$BUILD_DOCKER_TARGET"
+  fi
+  printf 'export SKIP_API_SECURITY=%s\n' "${SKIP_API_SECURITY:-false}"
+  printf 'export SKIP_DEPLOY=%s\n' "${SKIP_DEPLOY:-false}"
 fi
 # Do NOT exit — this file is sourced from CI before_script (. script).

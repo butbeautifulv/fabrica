@@ -25,6 +25,10 @@ dfd-diagrams-report:
       - reports/dfd/${SERVICE_NAME}/
     expire_in: 30 days
   rules:
+    - if: '$SKIP_API_SECURITY == "true"'
+      when: never
+    - if: '$SKIP_DEPLOY == "true"'
+      when: never
     - if: '$CI_COMMIT_TAG =~ /hotfix/i'
       when: never
     - if: '$CI_COMMIT_TAG'

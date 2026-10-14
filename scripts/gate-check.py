@@ -340,9 +340,13 @@ def main() -> None:
         print(f"Policy not found: {args.policy}", file=sys.stderr)
         sys.exit(2)
 
+    # Canonical: osa-sca (composition), container (image). Legacy aliases still resolve.
     control = args.control
-    if control == "container":
-        control = "sca"
+    _CONTROL_ALIASES = {
+        "osa": "osa-sca",
+        "sca": "container",
+    }
+    control = _CONTROL_ALIASES.get(control, control)
 
     policy = load_policy_section(args.policy, control)
 
@@ -382,7 +386,7 @@ def main() -> None:
         else:
             ok, msg = missing_report(args.report, policy)
 
-    if ok and control in ("osa", "sca") and args.report.exists():
+    if ok and control in ("osa-sca", "container", "osa", "sca") and args.report.exists():
         kev_ok, kev_msg = evaluate_kev(args.report, policy)
         if kev_msg != "kev=0":
             msg = f"{msg}; {kev_msg}"

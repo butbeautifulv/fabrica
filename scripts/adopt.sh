@@ -6,7 +6,7 @@ usage() {
   cat <<'EOF'
 Usage: adopt.sh --profile PROFILE --platform PLATFORM --target DIR [options]
 
-Profiles: minimal | shift-left | supply-chain | full | ai-ml | oss-full | oss-full-node | oss-full-enterprise
+Profiles: minimal | shift-left | supply-chain | full | ai-ml | oss-full | oss-full-node | oss-full-enterprise | oss-full-node-k3s
 Platforms: gitlab | github
 
 Options:
@@ -83,13 +83,37 @@ fi
 copy "$ROOT/scripts/gate-check.py" "$TARGET/scripts/gate-check.py"
 copy "$ROOT/scripts/normalize-sarif.py" "$TARGET/scripts/normalize-sarif.py"
 copy "$ROOT/scripts/aspm-export.py" "$TARGET/scripts/aspm-export.py"
+copy "$ROOT/scripts/aspm-export-ci.sh" "$TARGET/scripts/aspm-export-ci.sh"
 copy "$ROOT/scripts/ai-ml-scan.py" "$TARGET/scripts/ai-ml-scan.py"
+copy "$ROOT/scripts/kev-enrich-sarif.py" "$TARGET/scripts/kev-enrich-sarif.py"
+copy "$ROOT/scripts/epss-enrich-sarif.py" "$TARGET/scripts/epss-enrich-sarif.py"
 copy "$ROOT/scripts/registry-login.sh" "$TARGET/scripts/registry-login.sh"
 copy "$ROOT/scripts/registry-auth-env.sh" "$TARGET/scripts/registry-auth-env.sh"
 copy "$ROOT/scripts/registry-resolve-env.sh" "$TARGET/scripts/registry-resolve-env.sh"
+if [[ -f "$ROOT/scripts/lib/kev_catalog.py" ]]; then
+  copy "$ROOT/scripts/lib/kev_catalog.py" "$TARGET/scripts/lib/kev_catalog.py"
+fi
+if [[ -f "$ROOT/scripts/lib/epss_catalog.py" ]]; then
+  copy "$ROOT/scripts/lib/epss_catalog.py" "$TARGET/scripts/lib/epss_catalog.py"
+fi
+if [[ -f "$ROOT/config/kev/cisa-kev.min.json" ]]; then
+  copy "$ROOT/config/kev/cisa-kev.min.json" "$TARGET/config/kev/cisa-kev.min.json"
+fi
+if [[ -f "$ROOT/config/epss/epss_scores.min.json.gz" ]]; then
+  copy "$ROOT/config/epss/epss_scores.min.json.gz" "$TARGET/config/epss/epss_scores.min.json.gz"
+fi
+if [[ -f "$ROOT/config/epss/epss_meta.json" ]]; then
+  copy "$ROOT/config/epss/epss_meta.json" "$TARGET/config/epss/epss_meta.json"
+fi
+if [[ -f "$ROOT/config/security-gate-policy-node-k3s-adopt.yaml" ]]; then
+  copy "$ROOT/config/security-gate-policy-node-k3s-adopt.yaml" "$TARGET/config/security-gate-policy-node-k3s-adopt.yaml"
+fi
 chmod +x "$TARGET/scripts/gate-check.py" 2>/dev/null || true
 chmod +x "$TARGET/scripts/normalize-sarif.py" 2>/dev/null || true
 chmod +x "$TARGET/scripts/aspm-export.py" 2>/dev/null || true
+chmod +x "$TARGET/scripts/aspm-export-ci.sh" 2>/dev/null || true
+chmod +x "$TARGET/scripts/kev-enrich-sarif.py" 2>/dev/null || true
+chmod +x "$TARGET/scripts/epss-enrich-sarif.py" 2>/dev/null || true
 chmod +x "$TARGET/scripts/registry-login.sh" 2>/dev/null || true
 chmod +x "$TARGET/scripts/registry-auth-env.sh" 2>/dev/null || true
 chmod +x "$TARGET/scripts/registry-resolve-env.sh" 2>/dev/null || true
@@ -167,6 +191,7 @@ case "$PROFILE" in
   oss-full)   PHASES="A2 B1-B6 C1-C4 D1 Helm deploy F3 (100% OSS scanners)" ;;
   oss-full-node) PHASES="A2 B1-B6 (Node validate) C1-C2 optional D1 compose-DAST (100% OSS)" ;;
   oss-full-enterprise) PHASES="A2 B1-B6 C1-C2 enterprise stages + contour Helm (common-templates)" ;;
+  oss-full-node-k3s) PHASES="Bun validate + osa-sca/container (inline KEV/EPSS) + Kaniko k3s + kustomize deploy" ;;
   *) echo "Unknown profile: $PROFILE"; exit 1 ;;
 esac
 

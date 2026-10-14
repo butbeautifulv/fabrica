@@ -10,6 +10,26 @@ DAF practice: `P-DEFECT-CNS` — consolidation of SAST/DAST/SCA findings.
 - CLI: [`scripts/aspm-export.py`](../../scripts/aspm-export.py)
 - GitLab snippet: [`.gitlab/jobs/aspm/export-after-script.yml`](../../templates/gitlab/jobs/aspm/export-after-script.yml)
 - Profile **`oss-full`**: per-scan upload in `after_script` of each scanner job
+- Mirror entry: [`scripts/aspm-export-ci.sh`](../../scripts/aspm-export-ci.sh) (python → docker `$OSS_PYTHON_IMAGE` → curl)
+
+### OSA / SCA → Generic Findings Import (KEV / EPSS)
+
+Trivy OSA/SCA upload as **`Generic Findings Import`** (not raw SARIF). Enriched SARIF
+`properties.epss` / `cisaKev` are converted by `sarif_to_generic()` in `aspm-export.py` into
+native Finding fields:
+
+| Field | Source |
+|-------|--------|
+| `epss_score` / `epss_percentile` | `properties.epss` / `epssPercentile` |
+| `known_exploited` + tag `cisa-kev` | `properties.cisaKev` |
+| `cve` / `vulnerability_ids` | CVE IDs from ruleId / message |
+
+DefectDojo’s SARIF importer ignores those custom properties — without Generic conversion they
+never appear in the Finding UI. Mirror jobs `trivy-osa` / `trivy-sca` and `trivy-*-enrich`
+call `aspm-export-ci.sh` after enrich so Dojo receives the converted payload.
+
+Do **not** emit the deprecated Generic field `cve` — DefectDojo 2.50 returns HTTP 500; use
+`vulnerability_ids` only (verified on corp `:30808`).
 
 ## DefectDojo setup
 

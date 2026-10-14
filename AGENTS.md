@@ -63,8 +63,9 @@ Validate: `make validate`, `make validate-helm`. Infra SaC smoke: `bash scripts/
 - Policy: `config/security-gate-policy.yaml` (corp adopt: `config/security-gate-policy-adopt.yaml`)
 - Gate script: `scripts/gate-check.py`
 - Infra SCAP: `scripts/summarize_infra.py`, `scripts/oscap-*-scan.sh`, control `infra:`
-- Adopt: `scripts/adopt.sh --profile shift-left|ai-ml|oss-full --platform gitlab|github --target /path [--policy adopt|strict] [--python-stack auto|uv|pip|node]`
+- Adopt: `scripts/adopt.sh --profile shift-left|ai-ml|oss-full|oss-full-node|oss-full-node-k3s --platform gitlab|github --target /path [--policy adopt|strict] [--python-stack auto|uv|pip|node]`
 - **Corp mirror:** profile `templates/profiles/oss-full-service-mirror.gitlab-ci.yml`; sync via `scripts/point-copy-mirror.sh` (not `adopt.sh` into existing `.gitlab/jobs`); verify `bash scripts/validate-mirror-corp.sh`
+- **Node + k3s:** profile `oss-full-node-k3s` — Bun validate, controls `osa-sca` (composition) + `container` (image), inline KEV/EPSS/ASPM, Kaniko, kustomize deploy; policy `config/security-gate-policy-node-k3s-adopt.yaml`
 - Corp DAST: `scripts/run-dast-zap-api-mirror.sh` (`zap-api-scan` + live OpenAPI) — not generic `dast.yml` baseline
 - Ephemeral `ci-http-stub` / mongo in deploy-test = **lifespan fixtures**, not scanner fake-green stubs
 - Profiles: `templates/profiles/`

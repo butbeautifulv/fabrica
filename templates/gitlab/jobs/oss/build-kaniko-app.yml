@@ -1,0 +1,77 @@
+# Generic app image build — Kaniko only (k3s / Kubernetes executor).
+# Variables: DOCKERFILE (default Dockerfile), IMAGE_REPO, IMAGE_TAG, NEXUS_REGISTRY, NPM_REGISTRY
+
+build-image:
+  stage: build
+  image:
+    name: ${OSS_KANIKO_IMAGE:-gcr.io/kaniko-project/executor:v1.23.2-debug}
+    entrypoint: [""]
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      when: manual
+      allow_failure: true
+  needs:
+    - job: gitleaks-scan
+      optional: true
+    - job: forbidden-files
+      optional: true
+    - job: semgrep-sast
+      optional: true
+    - job: trivy-osa-sca
+      optional: true
+    - job: checkov-iac
+      optional: true
+    - job: dockerfile-lint
+      optional: true
+  variables:
+    PATH: "/busybox:/kaniko:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  script:
+    - |
+      set -eu
+      export PATH="/busybox:/kaniko:${PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}"
+      if [ ! -x /kaniko/executor ]; then
+        echo "[build] ERROR: /kaniko/executor missing — refuse non-Kaniko executor"
+        exit 1
+      fi
+      DOCKERFILE="${DOCKERFILE:-Dockerfile}"
+      if [ ! -f "$DOCKERFILE" ]; then
+        echo "[build] ERROR: missing $DOCKERFILE"
+        exit 1
+      fi
+      IMAGE_TAG="${IMAGE_TAG:-${CI_COMMIT_SHA}}"
+      IMAGE_REPO="${IMAGE_REPO:-${CI_REGISTRY_IMAGE}}"
+      if [ -z "$IMAGE_REPO" ] || [ "$IMAGE_REPO" = "/" ]; then
+        echo "[build] ERROR: set IMAGE_REPO or CI_REGISTRY_IMAGE"
+        exit 1
+      fi
+      DESTINATION="${IMAGE_REPO}:${IMAGE_TAG}"
+      echo "[build] dockerfile=$DOCKERFILE destination=$DESTINATION"
+      CERT_ARG=""
+      if [ -f /etc/ssl/certs/nexus/ca.crt ] && [ -n "${NEXUS_DOCKER_PREFIX:-}" ]; then
+        CERT_ARG="--registry-certificate=${NEXUS_DOCKER_PREFIX},/etc/ssl/certs/nexus/ca.crt"
+      fi
+      # shellcheck disable=SC2086
+      /kaniko/executor \
+        --dockerfile="${CI_PROJECT_DIR}/${DOCKERFILE}" \
+        --context=dir://${CI_PROJECT_DIR} \
+        --destination="${DESTINATION}" \
+        --build-arg=NEXUS_REGISTRY="${NEXUS_REGISTRY:-}" \
+        --build-arg=NPM_REGISTRY="${NPM_REGISTRY:-}" \
+        ${CERT_ARG} \
+        --snapshot-mode=redo \
+        --log-format=text
+      {
+        echo "IMAGE_TAG=${IMAGE_TAG}"
+        echo "IMAGE_REPO=${IMAGE_REPO}"
+        echo "REGISTRY=${IMAGE_REPO}"
+        echo "BUILD_FALLBACK=0"
+      } > build.env
+  artifacts:
+    when: always
+    reports:
+      dotenv: build.env
+    paths:
+      - build.env
+    expire_in: 3 days
+  allow_failure: false

@@ -47,6 +47,8 @@ NEXUS_DOCKER_PREFIX="${NEXUS_DOCKER_PREFIX:-nexus.svo.aero:8345}"
 NEXUS_DOCKER_GROUP="${NEXUS_DOCKER_GROUP:-nexus.svo.aero:8374}"
 OSS_PYTHON_IMAGE="${OSS_PYTHON_IMAGE:-${NEXUS_DOCKER_PREFIX}/library/python:3.11.11-slim-bookworm}"
 OSS_MONGO_IMAGE="${OSS_MONGO_IMAGE:-${NEXUS_DOCKER_PREFIX}/library/mongo:6}"
+OSS_POSTGRES_IMAGE="${OSS_POSTGRES_IMAGE:-${NEXUS_DOCKER_PREFIX}/library/postgres:16}"
+OSS_REDIS_IMAGE="${OSS_REDIS_IMAGE:-${NEXUS_DOCKER_PREFIX}/library/redis:7-alpine}"
 
 echo "[deploy] service=$SVC k8s_name=$K8S_NAME image=$IMG port=$PORT ns=$NS readiness=$READINESS_PATH"
 echo "[deploy] workdir=${DEPLOY_WORKDIR:-<image default>} command=${DEPLOY_COMMAND:-<image CMD>}"
@@ -220,6 +222,101 @@ spec:
 STUB
     echo "[deploy] waiting for ci-http-stub..."
     kubectl rollout status deployment/ci-http-stub -n "$NS" --timeout=120s
+    ;;
+esac
+
+case ",${DEPLOY_STUBS}," in
+  *,postgres,*)
+    echo "[deploy] deploying postgres stub ($OSS_POSTGRES_IMAGE)"
+    kubectl apply -n "$NS" -f - <<PG
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: $NS
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      imagePullSecrets:$PULL_SECRETS
+      containers:
+        - name: postgres
+          image: $OSS_POSTGRES_IMAGE
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              value: gis
+            - name: POSTGRES_PASSWORD
+              value: gis
+            - name: POSTGRES_DB
+              value: gis
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: $NS
+spec:
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+PG
+    echo "[deploy] waiting for postgres..."
+    kubectl rollout status deployment/postgres -n "$NS" --timeout=180s
+    ;;
+esac
+
+case ",${DEPLOY_STUBS}," in
+  *,redis,*)
+    echo "[deploy] deploying redis stub ($OSS_REDIS_IMAGE)"
+    kubectl apply -n "$NS" -f - <<REDIS
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: $NS
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      imagePullSecrets:$PULL_SECRETS
+      containers:
+        - name: redis
+          image: $OSS_REDIS_IMAGE
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 6379
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: $NS
+spec:
+  selector:
+    app: redis
+  ports:
+    - port: 6379
+      targetPort: 6379
+REDIS
+    echo "[deploy] waiting for redis..."
+    kubectl rollout status deployment/redis -n "$NS" --timeout=120s
     ;;
 esac
 

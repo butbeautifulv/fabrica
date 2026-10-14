@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Create map_objects-ci pipelines for curated mirror-services.yaml entries.
 
-  GITLAB_PAT=… MIRROR_PROJECT_ID=1962 \\
+  GITLAB_TOKEN=… MIRROR_PROJECT_ID=1962 \\
     python3 scripts/mirror-fleet-trigger.py --dry-run
-  python3 scripts/mirror-fleet-trigger.py --services a,b --concurrency 1
+  python3 scripts/mirror-fleet-trigger.py --services a,b --wait --concurrency 1
 
 No git tags. Variables: SERVICE_NAME, SOURCE_REF (= source_ref_fallback).
 """
@@ -25,13 +25,14 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from lib.mirror_services import filter_services, load_services  # noqa: E402
 
-# Wave-3 pilots (deploy-capable). Keep --wave6 as alias for scripts/Make.
 WAVE3 = [
     "hwa_service",
     "data_lake_service",
     "user_service",
 ]
-WAVE6 = WAVE3  # backwards-compat alias
+WAVE6 = WAVE3
+
+TERMINAL = frozenset({"success", "failed", "canceled", "skipped", "manual"})
 
 
 def api_base() -> str:
@@ -43,11 +44,11 @@ def api_base() -> str:
 
 
 def token() -> str:
-    for k in ("GITLAB_PAT", "SOURCE_GIT_TOKEN", "PRIVATE_TOKEN", "GITLAB_PAT_RUNNER"):
+    for k in ("GITLAB_TOKEN", "GITLAB_PAT", "SOURCE_GIT_TOKEN", "PRIVATE_TOKEN", "GITLAB_PAT_RUNNER"):
         v = os.environ.get(k)
         if v:
             return v
-    raise SystemExit("ERROR: GITLAB_PAT required (unless --dry-run)")
+    raise SystemExit("ERROR: GITLAB_TOKEN required (unless --dry-run)")
 
 
 def ssl_ctx() -> ssl.SSLContext:
@@ -64,7 +65,7 @@ def http_json(method: str, url: str, tok: str, ctx: ssl.SSLContext, body: dict |
     if body is not None:
         data = json.dumps(body).encode()
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
-    with urllib.request.urlopen(req, context=ctx, timeout=60) as resp:
+    with urllib.request.urlopen(req, context=ctx, timeout=120) as resp:
         return json.load(resp)
 
 
@@ -81,6 +82,97 @@ def detect_ref(api: str, tok: str, project_id: str, ctx: ssl.SSLContext, explici
         return "main"
 
 
+def poll_pipeline(
+    api: str,
+    tok: str,
+    ctx: ssl.SSLContext,
+    project_id: str,
+    pipeline_id: int,
+    *,
+    timeout_s: float,
+    interval_s: float,
+) -> dict:
+    deadline = time.monotonic() + timeout_s
+    last = {}
+    while time.monotonic() < deadline:
+        last = http_json("GET", f"{api}/projects/{project_id}/pipelines/{pipeline_id}", tok, ctx)
+        status = str(last.get("status") or "")
+        if status in TERMINAL:
+            return last
+        time.sleep(interval_s)
+    raise TimeoutError(f"pipeline {pipeline_id} not terminal after {timeout_s}s (last={last.get('status')})")
+
+
+def poll_jobs(
+    api: str,
+    tok: str,
+    ctx: ssl.SSLContext,
+    project_id: str,
+    pipeline_id: int,
+    job_names: list[str],
+    *,
+    timeout_s: float,
+    interval_s: float,
+) -> dict[str, str]:
+    deadline = time.monotonic() + timeout_s
+    terminal_job = frozenset({"success", "failed", "canceled", "skipped"})
+    statuses: dict[str, str] = {}
+    while time.monotonic() < deadline:
+        jobs = http_json("GET", f"{api}/projects/{project_id}/pipelines/{pipeline_id}/jobs?per_page=100", tok, ctx)
+        by_name = {j["name"]: j for j in jobs}
+        done = True
+        for name in job_names:
+            j = by_name.get(name)
+            if not j:
+                done = False
+                continue
+            st = str(j.get("status") or "")
+            statuses[name] = st
+            if st not in terminal_job:
+                done = False
+        if done and all(n in statuses for n in job_names):
+            return statuses
+        time.sleep(interval_s)
+    return statuses
+
+
+def write_matrix_row(jsonl_path: Path, row: dict) -> None:
+    with jsonl_path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def refresh_matrix_md(jsonl_path: Path, matrix_path: Path) -> None:
+    if not jsonl_path.is_file():
+        return
+    rows = []
+    for line in jsonl_path.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            rows.append(json.loads(line))
+    lines = [
+        "# Mirror fleet matrix (report — not parallel execution)",
+        "",
+        "| ts (UTC) | service | source_ref | pipeline | status | duration_s | notes |",
+        "|----------|---------|------------|----------|--------|------------|-------|",
+    ]
+    for r in rows:
+        pid = r.get("pipeline_id") or ""
+        url = r.get("web_url") or ""
+        pipe_col = f"[{pid}]({url})" if pid and url else str(pid)
+        lines.append(
+            "| {ts} | {service} | {source_ref} | {pipe} | {status} | {dur} | {notes} |".format(
+                ts=r.get("ts", "")[:19],
+                service=r.get("service", ""),
+                source_ref=r.get("source_ref", ""),
+                pipe=pipe_col,
+                status=r.get("status", r.get("error", "")),
+                dur=r.get("duration_s", ""),
+                notes=r.get("notes", ""),
+            )
+        )
+    matrix_path.parent.mkdir(parents=True, exist_ok=True)
+    matrix_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Mirror fleet pipeline trigger")
     ap.add_argument("--dry-run", action="store_true")
@@ -90,16 +182,13 @@ def main() -> int:
     ap.add_argument("--sleep", type=float, default=2.0, help="Seconds between pipeline creates")
     ap.add_argument("--services", default="", help="Comma-separated allow-list (default: all matching filters)")
     ap.add_argument("--enabled-only", action=argparse.BooleanOptionalAction, default=True)
-    ap.add_argument(
-        "--wave3",
-        action="store_true",
-        help="Shorthand: Wave-3 pilot allow-list (hwa, data_lake, user)",
-    )
-    ap.add_argument(
-        "--wave6",
-        action="store_true",
-        help="Alias for --wave3 (legacy name)",
-    )
+    ap.add_argument("--wave3", action="store_true", help="Shorthand: Wave-3 pilot allow-list")
+    ap.add_argument("--wave6", action="store_true", help="Alias for --wave3")
+    ap.add_argument("--wait", action="store_true", help="Poll each pipeline until terminal before next")
+    ap.add_argument("--wait-cleanup", action="store_true", help="After --wait, poll cleanup-test and cleanup-runner")
+    ap.add_argument("--stop-on-fail", action="store_true", help="Stop queue when pipeline status=failed")
+    ap.add_argument("--poll-interval", type=float, default=30.0)
+    ap.add_argument("--poll-timeout", type=float, default=7200.0)
     ap.add_argument(
         "--registry",
         default=os.environ.get("MIRROR_SERVICES", str(ROOT / "config" / "mirror-services.yaml")),
@@ -108,6 +197,11 @@ def main() -> int:
         "--jsonl",
         default=str(ROOT / "reports" / "mirror-fleet-last.jsonl"),
         help="Append live create results here",
+    )
+    ap.add_argument(
+        "--matrix",
+        default=str(ROOT / "reports" / "mirror-fleet-matrix.md"),
+        help="Refresh markdown matrix from jsonl",
     )
     args = ap.parse_args()
 
@@ -135,7 +229,10 @@ def main() -> int:
 
     for s in svcs:
         sref = s.get("source_ref_fallback") or ""
-        print(f"[fleet] SERVICE_NAME={s['name']} SOURCE_REF={sref} tier={s.get('tier')} enabled={s.get('enabled')}")
+        print(
+            f"[fleet] SERVICE_NAME={s['name']} SOURCE_REF={sref} "
+            f"tier={s.get('tier')} scan_order={s.get('scan_order')} skip_api={s.get('skip_api_security')}"
+        )
 
     if args.dry_run:
         print(f"[fleet] dry-run count={len(svcs)}")
@@ -151,13 +248,12 @@ def main() -> int:
     ctx = ssl_ctx()
     ref = detect_ref(api, tok, str(project_id), ctx, args.ref)
     jsonl_path = Path(args.jsonl)
+    matrix_path = Path(args.matrix)
     jsonl_path.parent.mkdir(parents=True, exist_ok=True)
 
     failed = 0
     created = 0
-    # concurrency>1 still serializes POSTs with sleep; cap documented as in-flight creates pacing
-    conc = max(1, int(args.concurrency))
-    _ = conc  # reserved for future parallel wait; pacing via sleep
+    t0_queue = time.monotonic()
 
     for s in svcs:
         name = s["name"]
@@ -166,46 +262,104 @@ def main() -> int:
             print(f"[fleet] SKIP {name}: empty source_ref_fallback")
             failed += 1
             continue
+
+        skip_api = bool(s.get("skip_api_security"))
+        skip_deploy = skip_api
+        env_rel = s.get("deploy_env_file") or ""
+        if env_rel:
+            env_path = ROOT / env_rel if not Path(env_rel).is_absolute() else Path(env_rel)
+            if not env_path.is_file():
+                skip_deploy = True
+                print(f"[fleet] WARN {name}: missing {env_rel} — SKIP_DEPLOY=true")
+
+        variables = [
+            {"key": "SERVICE_NAME", "value": name},
+            {"key": "SOURCE_REF", "value": sref},
+            {"key": "SKIP_API_SECURITY", "value": "true" if skip_api else "false"},
+            {"key": "SKIP_DEPLOY", "value": "true" if skip_deploy else "false"},
+        ]
         body = {
             "ref": ref,
-            "variables": [
-                {"key": "SERVICE_NAME", "value": name},
-                {"key": "SOURCE_REF", "value": sref},
-            ],
+            "variables": variables,
         }
+        t0 = time.monotonic()
         try:
             p = http_json("POST", f"{api}/projects/{project_id}/pipeline", tok, ctx, body)
+            pipeline_id = int(p.get("id") or 0)
             row = {
                 "ts": datetime.now(timezone.utc).isoformat(),
                 "service": name,
                 "source_ref": sref,
-                "pipeline_id": p.get("id"),
+                "pipeline_id": pipeline_id,
                 "status": p.get("status"),
                 "web_url": p.get("web_url"),
+                "notes": "",
             }
-            print(f"  pipeline id={row['pipeline_id']} status={row['status']} url={row['web_url']}")
-            with jsonl_path.open("a", encoding="utf-8") as fh:
-                fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+            print(f"  pipeline id={pipeline_id} status={row['status']} url={row['web_url']}")
+
+            if args.wait and pipeline_id:
+                final = poll_pipeline(
+                    api,
+                    tok,
+                    ctx,
+                    str(project_id),
+                    pipeline_id,
+                    timeout_s=float(args.poll_timeout),
+                    interval_s=float(args.poll_interval),
+                )
+                row["status"] = final.get("status")
+                notes = []
+                if args.wait_cleanup:
+                    jstat = poll_jobs(
+                        api,
+                        tok,
+                        ctx,
+                        str(project_id),
+                        pipeline_id,
+                        ["cleanup-test", "cleanup-runner"],
+                        timeout_s=min(600.0, float(args.poll_timeout)),
+                        interval_s=float(args.poll_interval),
+                    )
+                    notes.append(
+                        "cleanup="
+                        + ",".join(f"{k}={jstat.get(k, '?')}" for k in ("cleanup-test", "cleanup-runner"))
+                    )
+                row["notes"] = "; ".join(notes)
+                row["duration_s"] = round(time.monotonic() - t0, 1)
+                print(f"  final status={row['status']} duration_s={row['duration_s']} {row['notes']}")
+                if row["status"] == "failed" and args.stop_on_fail:
+                    write_matrix_row(jsonl_path, row)
+                    refresh_matrix_md(jsonl_path, matrix_path)
+                    print(f"[fleet] stop-on-fail after {name}", file=sys.stderr)
+                    return 1
+
+            write_matrix_row(jsonl_path, row)
+            refresh_matrix_md(jsonl_path, matrix_path)
             created += 1
-        except urllib.error.HTTPError as e:
+        except (urllib.error.HTTPError, TimeoutError) as e:
             print(f"[fleet] ERROR {name}: {e}", file=sys.stderr)
             failed += 1
-            with jsonl_path.open("a", encoding="utf-8") as fh:
-                fh.write(
-                    json.dumps(
-                        {
-                            "ts": datetime.now(timezone.utc).isoformat(),
-                            "service": name,
-                            "source_ref": sref,
-                            "error": str(e),
-                        },
-                        ensure_ascii=False,
-                    )
-                    + "\n"
-                )
+            write_matrix_row(
+                jsonl_path,
+                {
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                    "service": name,
+                    "source_ref": sref,
+                    "error": str(e),
+                },
+            )
+            refresh_matrix_md(jsonl_path, matrix_path)
+            if args.stop_on_fail:
+                return 1
+        # unbuffered progress line for bg logs
+        print(f"[fleet] progress created={created} failed={failed}", flush=True)
         time.sleep(max(0.0, float(args.sleep)))
 
-    print(f"[fleet] done created={created} failed={failed} jsonl={jsonl_path}")
+    refresh_matrix_md(jsonl_path, matrix_path)
+    print(
+        f"[fleet] done created={created} failed={failed} "
+        f"elapsed_s={round(time.monotonic() - t0_queue, 1)} jsonl={jsonl_path} matrix={matrix_path}"
+    )
     return 1 if failed else 0
 
 

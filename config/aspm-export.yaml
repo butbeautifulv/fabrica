@@ -29,12 +29,20 @@ controls:
   bandit:
     scan_type: "SARIF"
     test_title: "sast-bandit"
+  osa-sca:
+    # Generic so epss_score / known_exploited / tags survive import (SARIF props do not).
+    scan_type: "Generic Findings Import"
+    test_title: "osa-sca-trivy-fs"
+  container:
+    scan_type: "Generic Findings Import"
+    test_title: "container-trivy-image"
+  # Deprecated aliases (same scan_type) — remove after consumers migrate
   osa:
-    scan_type: "SARIF"
-    test_title: "osa-trivy-fs"
+    scan_type: "Generic Findings Import"
+    test_title: "osa-sca-trivy-fs"
   sca:
-    scan_type: "SARIF"
-    test_title: "sca-trivy-image"
+    scan_type: "Generic Findings Import"
+    test_title: "container-trivy-image"
   iac:
     scan_type: "SARIF"
     test_title: "iac-checkov"

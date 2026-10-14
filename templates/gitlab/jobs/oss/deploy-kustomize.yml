@@ -1,0 +1,74 @@
+# Manual kubectl deploy — set image + rollout (kustomize-friendly).
+# Requires file CI variable KUBECONFIG.
+# Vars: K8S_NAMESPACE, K8S_DEPLOYMENT, K8S_CONTAINER, IMAGE_REPO, IMAGE_TAG
+
+deploy-kustomize:
+  stage: deploy
+  image:
+    name: ${OSS_KUBECTL_IMAGE:-bitnami/kubectl:1.36.3}
+    entrypoint: [""]
+  environment:
+    name: ${DEPLOY_ENVIRONMENT:-preprod}
+  needs:
+    - job: build-image
+      artifacts: true
+    - job: trivy-container
+      optional: true
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
+  script:
+    - |
+      set -eu
+      if [ -z "${KUBECONFIG:-}" ] || [ ! -f "${KUBECONFIG}" ]; then
+        echo "[deploy] ERROR: missing KUBECONFIG file variable"
+        exit 2
+      fi
+      NS="${K8S_NAMESPACE:-default}"
+      DEP="${K8S_DEPLOYMENT:-app}"
+      CTR="${K8S_CONTAINER:-$DEP}"
+      TAG="${IMAGE_TAG:-${CI_COMMIT_SHA}}"
+      REPO="${IMAGE_REPO:-${REGISTRY:-${CI_REGISTRY_IMAGE}}}"
+      if [ -z "$REPO" ]; then
+        echo "[deploy] ERROR: IMAGE_REPO / REGISTRY unset"
+        exit 2
+      fi
+      IMAGE="${REPO}:${TAG}"
+      echo "[deploy] ns=$NS deployment=$DEP container=$CTR image=$IMAGE"
+      kubectl --kubeconfig "$KUBECONFIG" -n "$NS" set image "deployment/${DEP}" "${CTR}=${IMAGE}"
+      kubectl --kubeconfig "$KUBECONFIG" -n "$NS" rollout status "deployment/${DEP}" --timeout=300s
+  allow_failure: false
+
+smoke-k8s:
+  stage: smoke
+  image:
+    name: ${OSS_CURL_IMAGE:-${OSS_PYTHON_IMAGE:-python:3.11-slim-bookworm}}
+    entrypoint: [""]
+  needs:
+    - job: deploy-kustomize
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  script:
+    - |
+      set -eu
+      BASE="${SMOKE_URL:-${HEX_SMOKE_URL:-}}"
+      if [ -z "$BASE" ]; then
+        echo "[smoke] ERROR: set SMOKE_URL or HEX_SMOKE_URL"
+        exit 2
+      fi
+      HOST_HDR="${SMOKE_HOST:-}"
+      CURL_OPTS="-ksS -o /dev/null -w %{http_code}"
+      if [ -n "$HOST_HDR" ]; then
+        CURL_OPTS="$CURL_OPTS -H Host:${HOST_HDR}"
+      fi
+      PATHS="${SMOKE_PATHS:-/api/health/ready /admin/login}"
+      for path in $PATHS; do
+        code=$(curl $CURL_OPTS "${BASE}${path}" || echo 000)
+        echo "[smoke] ${path} -> HTTP ${code}"
+        case "$code" in
+          200|301|302|307|308) ;;
+          *) echo "[smoke] FAIL ${path}"; exit 1 ;;
+        esac
+      done
+      echo "[smoke] ok"
+  allow_failure: false

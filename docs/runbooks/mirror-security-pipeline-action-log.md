@@ -422,4 +422,45 @@ Retry (mirror `54e1b9b`):
 | 2026-07-30 | hwa_service | 0.0.4 | 112826 | https://gitlab.svo.aero/av.popov/map_objects-ci/-/pipelines/112826 |
 | 2026-07-30 | user_service | 0.4.4 | 112827 | https://gitlab.svo.aero/av.popov/map_objects-ci/-/pipelines/112827 |
 
+## Wave-7 build-all fleet (2026-08-25)
 
+Mirror `1170245` on `av.popov/map_objects-ci` (1962):
+
+- **SKIP_API_SECURITY / SKIP_DEPLOY** — pipeline variables from `mirror-fleet-trigger.py` + resolve; workers skip deploy/dast/fuzz.
+- **Deploy stubs** — `postgres`, `redis` in `deploy-test-k8s.sh`; 24 generated `config/mirror-deploy/*.env`.
+- **Fleet tooling** — `--wait`, `--wait-cleanup`, `scan_order` sort, matrix md/jsonl.
+- **Runner fix (P30)** — removed stale `node_selector` pin to missing `svo-aosint-ps01` (single-node cluster); dual Nexus auths in `nexus-registry`.
+
+Smoke (serial):
+
+| SERVICE_NAME | Pipeline | Status | Notes |
+|--------------|----------|--------|-------|
+| maps_seeder | [115721](https://gitlab.svo.aero/av.popov/map_objects-ci/-/pipelines/115721) | manual | deploy/dast **skipped**; build+scan green |
+| hwa_service | [115722](https://gitlab.svo.aero/av.popov/map_objects-ci/-/pipelines/115722) | manual | full deploy path regression |
+| mail_service | [115720](https://gitlab.svo.aero/av.popov/map_objects-ci/-/pipelines/115720) | failed | build-image: aodb-log-tools wheel 404 (Package Registry) |
+
+Full fleet (34 enabled): background on P30 `/tmp/map_objects-ci` — `reports/mirror-fleet-full.jsonl`, `reports/mirror-fleet-matrix.md`, log `reports/mirror-fleet-bg.log`, pid `reports/mirror-fleet-bg.pid`.
+
+**ASPM success bar:** `manual` with green build/sca/security = OK (sign-image is manual only). Workers: no deploy required.
+
+### aodb-log-tools Package Registry caveat (2026-08-25)
+
+Corp GitLab Package Registry accepts uploads (`201`) but stores `file_sha256=null`, so simple-index links are `…/packages/pypi/files/<name>#sha256=` and **downloads return 404**. gismaputils wheels uploaded earlier have real hashes and work.
+
+**Mitigation (mirror `60032e1`):** Kaniko synthesizes `vendor-aodb-log-tools/` stub (pyproject + package) when index/download fails, then path-dep rewrite continues. Re-upload alone does not fix downloads until GitLab computes sha256.
+
+Fleet progress snapshot (serial, all ASPM-OK `manual`):
+
+| SERVICE | Pipeline | Status |
+|---------|----------|--------|
+| hwa_service | 115723 | manual |
+| data_lake_service | 115724 | manual |
+| user_service | 115732 | manual |
+| dynamic_layer_service | 115740 | manual |
+| event_service | 115742 | manual |
+| defects | 115745 | manual |
+
+| aircraft_filter | 115751 | manual |
+| assignments_satellite | 115754 | manual |
+
+**mail_service follow-up (115756):** aodb path-vendor works (`Installing aodb-log-tools …/vendor-aodb-log-tools`). Remaining build fail is Dockerfile `nuitka` stage (`No module named nuitka`) despite `--target source` — Kaniko still builds a later stage named `base`. Result: `BUILD_FALLBACK=1` → deploy fails (expected). Security+SCA still green. Mirror tip `7b5825b`.

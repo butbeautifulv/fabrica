@@ -51,6 +51,7 @@ FILES=(
   diagrams-go
   scripts/mirror-sync-sources.py
   scripts/mirror-fleet-trigger.py
+  scripts/gen-mirror-deploy-env.py
   scripts/mirror-baseline-trigger.sh
   scripts/mirror-inventory-services.py
   scripts/lib/mirror_services.py
@@ -75,6 +76,7 @@ FILES=(
   scripts/kev-enrich-sarif.py
   scripts/epss-enrich-sarif.py
   scripts/aspm-export.py
+  scripts/aspm-export-ci.sh
   scripts/deploy-test-k8s.sh
   scripts/cleanup-test-k8s.sh
   scripts/ci-ephemeral-stub-server.py

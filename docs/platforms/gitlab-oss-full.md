@@ -80,6 +80,19 @@ Tag-driven service mirror (e.g. `map_objects-ci`) uses tags `devsecops,k3s,corp,
 - Soft-fail adoption exception: [`ci-soft-fail-contract.md`](../runbooks/ci-soft-fail-contract.md)
 - Action log: [`mirror-security-pipeline-action-log.md`](../runbooks/mirror-security-pipeline-action-log.md)
 
+### Node + k3s profile (`oss-full-node-k3s`)
+
+Bun/Node apps on corp k3s (e.g. Hexenhammer). Same runner tags as the mirror; **Kaniko** build; **kustomize/kubectl** deploy (not Helm sample).
+
+```bash
+./scripts/adopt.sh --profile oss-full-node-k3s --platform gitlab --target /path/to/app --policy adopt --python-stack node
+```
+
+- Controls: **`osa-sca`** = composition / OSS deps in source; **`container`** = image scan (not “SCA = container”).
+- Inline in scan jobs: CISA KEV → EPSS → `gate-check` → DefectDojo upload (`aspm-export-ci.sh`). Companion `*-enrich` jobs disabled.
+- Day-1 policy: `config/security-gate-policy-node-k3s-adopt.yaml` (secrets + forbidden_files **block**; other scanners warn).
+- Vars: `IMAGE_REPO`, `KUBECONFIG`, `K8S_NAMESPACE` / `K8S_DEPLOYMENT`, `SMOKE_URL` / `HEX_SMOKE_URL`, Nexus + DefectDojo.
+
 ## Required CI/CD variables
 
 | Variable | Type | Purpose |

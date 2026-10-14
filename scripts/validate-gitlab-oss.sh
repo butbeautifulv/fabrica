@@ -27,8 +27,8 @@ required=(
   templates/gitlab/jobs/oss/build-push.yml
   templates/gitlab/jobs/oss/gitleaks.yml
   templates/gitlab/jobs/oss/semgrep-sast.yml
-  templates/gitlab/jobs/oss/trivy-osa.yml
-  templates/gitlab/jobs/oss/trivy-sca.yml
+  templates/gitlab/jobs/oss/trivy-osa-sca.yml
+  templates/gitlab/jobs/oss/trivy-container.yml
   templates/gitlab/jobs/oss/checkov-iac.yml
   templates/gitlab/jobs/oss/helm-deploy.yml
   templates/gitlab/jobs/oss/sbom-upload.yml
@@ -86,7 +86,7 @@ if ! grep -q 'hadolint-report.json' templates/gitlab/jobs/dockerfile-lint.yml; t
 fi
 
 for inc in oss/versions.yml oss/_docker.yml _security.common.yml oss/_base-validate.yml oss/build-push.yml \
-  oss/gitleaks.yml forbidden-files.yml oss/semgrep-sast.yml oss/trivy-osa.yml \
+  oss/gitleaks.yml forbidden-files.yml oss/semgrep-sast.yml oss/trivy-osa-sca.yml \
   oss/checkov-iac.yml aspm/upload-static.yml aspm/upload-image.yml \
   dast.yml dast-compose.yml oss/helm-deploy.yml conftest-admission.yml; do
   if ! grep -q "$inc" "$PROFILE"; then

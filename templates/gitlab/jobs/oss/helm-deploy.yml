@@ -21,7 +21,7 @@
       when: manual
   needs:
     - job: build-image
-    - job: trivy-sca
+    - job: trivy-container
       optional: true
 
 deploy-preprod:

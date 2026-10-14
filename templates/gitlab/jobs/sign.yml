@@ -9,7 +9,7 @@ sign-image:
       when: manual
   needs:
     - job: build-image
-    - job: trivy-sca
+    - job: trivy-container
       optional: true
     - job: container_scanning
       optional: true

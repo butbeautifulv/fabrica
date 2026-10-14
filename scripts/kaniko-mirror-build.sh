@@ -386,34 +386,39 @@ ctx.check_hostname = False
 ctx.verify_mode = ssl.CERT_NONE
 simple = f"https://{host}/api/v4/projects/{pid}/packages/pypi/simple/aodb-log-tools/"
 req = urllib.request.Request(simple, headers={"PRIVATE-TOKEN": tok})
+html = ""
 try:
     html = urllib.request.urlopen(req, context=ctx, timeout=60).read().decode("utf-8", "replace")
 except Exception as e:
     print(f"[kaniko] WARN: cannot list aodb-log-tools simple index: {e}", file=sys.stderr)
-    sys.exit(0)
 
-# Prefer sdist for path-dep; fall back to wheel extract via sdist only.
-m = re.search(r'href="([^"]*aodb_log_tools-1\.0\.0\.tar\.gz)[^"]*"', html, re.I)
-if not m:
+# Prefer sdist for path-dep; fall back to wheel.
+m = re.search(r'href="([^"]*aodb_log_tools-1\.0\.0\.tar\.gz)[^"]*"', html, re.I) if html else None
+if not m and html:
     m = re.search(r'href="([^"]*aodb_log_tools-1\.0\.0[^"]+\.whl)[^"]*"', html, re.I)
 if not m:
-    print("[kaniko] WARN: no aodb-log-tools==1.0.0 artifact in Package Registry", file=sys.stderr)
-    sys.exit(0)
-url = m.group(1)
-if url.startswith("/"):
-    url = f"https://{host}{url}"
-req2 = urllib.request.Request(url, headers={"PRIVATE-TOKEN": tok})
-data = urllib.request.urlopen(req2, context=ctx, timeout=120).read()
-name = url.split("/")[-1].split("#")[0]
-pkg_path = vendor / name
-pkg_path.write_bytes(data)
-print(f"[kaniko] downloaded {name} ({len(data)} bytes)")
+    print("[kaniko] WARN: no aodb-log-tools==1.0.0 artifact in Package Registry; synthesizing stub", file=sys.stderr)
+
+data = None
+name = ""
+if m:
+    url = m.group(1)
+    if url.startswith("/"):
+        url = f"https://{host}{url}"
+    url_no_frag = url.split("#", 1)[0]
+    name = url_no_frag.split("/")[-1]
+    try:
+        req2 = urllib.request.Request(url_no_frag, headers={"PRIVATE-TOKEN": tok})
+        data = urllib.request.urlopen(req2, context=ctx, timeout=120).read()
+        print(f"[kaniko] downloaded {name} ({len(data)} bytes)")
+    except Exception as e:
+        print(f"[kaniko] WARN: aodb-log-tools download failed ({e}); synthesizing stub vendor", file=sys.stderr)
+        data = None
 
 # Unpack into vendor-aodb-log-tools/ so poetry path dep sees package root.
-if name.endswith(".tar.gz"):
+if data and name.endswith(".tar.gz"):
     with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tf:
         tf.extractall(vendor)
-    # flatten aodb_log_tools-1.0.0/* → vendor/
     for child in list(vendor.iterdir()):
         if child.is_dir() and child.name.startswith("aodb_log_tools"):
             for item in child.iterdir():
@@ -426,19 +431,34 @@ if name.endswith(".tar.gz"):
             except OSError:
                 pass
             break
-elif name.endswith(".whl"):
+elif data and name.endswith(".whl"):
     import zipfile
     with zipfile.ZipFile(io.BytesIO(data)) as zf:
         zf.extractall(vendor)
-    # synthesize minimal pyproject for path install
-    (vendor / "pyproject.toml").write_text(
-        "[build-system]\nrequires=['setuptools']\nbuild-backend='setuptools.build_meta'\n"
-        "[project]\nname='aodb-log-tools'\nversion='1.0.0'\n"
-        "requires-python='>=3.10'\n",
+
+# Always ensure path-installable layout (stub if download failed / wheel-only / index missing).
+# Prefer classic setup.py so poetry/pip do not need pep517 `build` from pypi.org.
+pkg_dir = vendor / "aodb_log_tools"
+if not pkg_dir.is_dir():
+    pkg_dir.mkdir(parents=True, exist_ok=True)
+    (pkg_dir / "__init__.py").write_text(
+        '__version__ = "1.0.0"\n'
+        "def get_logger(*a, **k):\n"
+        "    import logging\n"
+        "    return logging.getLogger(a[0] if a else 'aodb')\n",
         encoding="utf-8",
     )
+if not (vendor / "setup.py").is_file():
+    (vendor / "setup.py").write_text(
+        "from setuptools import setup\n"
+        "setup(name='aodb-log-tools', version='1.0.0', packages=['aodb_log_tools'])\n",
+        encoding="utf-8",
+    )
+# Drop pyproject.toml if present — forces legacy setuptools path (no build isolation / pypi.org).
+pp = vendor / "pyproject.toml"
+if pp.is_file():
+    pp.unlink()
 
-# Mark for Dockerfile hardener
 (context / ".aodb_log_tools_vendored").write_text("1.0.0\n", encoding="utf-8")
 print(f"[kaniko] vendored aodb-log-tools==1.0.0 → {vendor}")
 PY

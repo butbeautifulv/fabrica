@@ -97,7 +97,12 @@ esac
 
 case "$POLICY_MODE" in
   adopt)
-    set_policy_ref "config/security-gate-policy-adopt.yaml"
+    if [[ -f "$TARGET/config/security-gate-policy-node-k3s-adopt.yaml" ]] \
+      && grep -q 'oss-full-node-k3s\|node-k3s-adopt' "$TARGET/.gitlab-ci.yml" 2>/dev/null; then
+      set_policy_ref "config/security-gate-policy-node-k3s-adopt.yaml"
+    else
+      set_policy_ref "config/security-gate-policy-adopt.yaml"
+    fi
     ;;
   strict)
     set_policy_ref "config/security-gate-policy.yaml"

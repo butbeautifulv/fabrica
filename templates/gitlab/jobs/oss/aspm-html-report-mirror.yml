@@ -6,11 +6,11 @@ aspm-html-report:
     name: $OSS_PYTHON_IMAGE
     entrypoint: [""]
   needs:
-    - job: trivy-osa-enrich
+    - job: trivy-osa-sca-enrich
       optional: true
-    - job: trivy-sca-enrich
+    - job: trivy-container-enrich
       optional: true
-    - job: trivy-osa
+    - job: trivy-osa-sca
       optional: true
     - job: build-image
       optional: true

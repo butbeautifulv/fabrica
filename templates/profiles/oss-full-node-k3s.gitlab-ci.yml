@@ -1,0 +1,90 @@
+# Profile: oss-full-node-k3s — Bun/Node + corp k3s (Kaniko, inline KEV/EPSS, kustomize deploy)
+# Control naming: osa-sca (composition) + container (image). Enrich companion jobs disabled.
+
+stages:
+  - validate
+  - test
+  - security
+  - static-security-upload
+  - build
+  - image-security-upload
+  - deploy
+  - post-deploy
+  - smoke
+
+default:
+  tags:
+    - devsecops
+    - k3s
+    - corp
+    - p30
+
+variables:
+  REGISTRY: "${CI_REGISTRY_IMAGE}"
+  SECURITY_POLICY: "config/security-gate-policy-node-k3s-adopt.yaml"
+  DEFECTDOJO_PRODUCT_NAME: "hexenhammer"
+  BUN_VERSION: "1.4.0"
+  DOCKERFILE: "Dockerfile"
+  K8S_NAMESPACE: "hexenhammer"
+  K8S_DEPLOYMENT: "hexenhammer"
+  K8S_CONTAINER: "hexenhammer"
+  NEXUS_DOCKER_PREFIX: "nexus.svo.aero:8345"
+  NEXUS_DOCKER_GROUP: "nexus.svo.aero:8374"
+  NEXUS_CXADO_DOCKER: "$NEXUS_DOCKER_PREFIX/cxado-docker"
+  OSS_GITLEAKS_IMAGE: "$NEXUS_DOCKER_GROUP/gitleaks/gitleaks:v8.22.1"
+  OSS_TRIVY_IMAGE: "$NEXUS_DOCKER_PREFIX/aquasec/trivy:0.67.2"
+  OSS_SEMGREP_IMAGE: "$NEXUS_DOCKER_PREFIX/returntocorp/semgrep:1.117.0"
+  OSS_PYTHON_IMAGE: "$NEXUS_DOCKER_PREFIX/library/python:3.11.11-slim-bookworm"
+  OSS_NODE_IMAGE: "$NEXUS_DOCKER_PREFIX/library/node:20-bookworm"
+  OSS_HADOLINT_IMAGE: "$NEXUS_DOCKER_PREFIX/hadolint/hadolint:v2.12.0-alpine"
+  OSS_CHECKOV_IMAGE: "$NEXUS_DOCKER_PREFIX/bridgecrew/checkov:3.2.449"
+  OSS_SYFT_IMAGE: "$NEXUS_DOCKER_PREFIX/anchore/syft:v1.20.0"
+  OSS_KANIKO_IMAGE: "$NEXUS_DOCKER_PREFIX/cxado-docker/kaniko-mirror-helper:v1.23.2-py3.11.11"
+  OSS_KUBECTL_IMAGE: "$NEXUS_DOCKER_PREFIX/cxado-docker/kubectl-deploy:1.36.3"
+  TRIVY_DB_REPOSITORY: "$NEXUS_DOCKER_GROUP/aquasecurity/trivy-db"
+  TRIVY_JAVA_DB_REPOSITORY: "$NEXUS_DOCKER_GROUP/aquasecurity/trivy-java-db"
+  TRIVY_INSECURE: "true"
+  DEFECTDOJO_INSECURE: "true"
+
+include:
+  - local: '/templates/gitlab/jobs/_security.common.yml'
+  - local: '/templates/gitlab/jobs/oss/versions.yml'
+  - local: '/templates/gitlab/jobs/oss/_docker.yml'
+  - local: '/templates/gitlab/jobs/registry/variables.yml'
+  - local: '/templates/gitlab/jobs/registry/login.yml'
+  - local: '/templates/gitlab/jobs/oss/validate-bun.yml'
+  - local: '/templates/gitlab/jobs/oss/gitleaks.yml'
+  - local: '/templates/gitlab/jobs/forbidden-files.yml'
+  - local: '/templates/gitlab/jobs/oss/semgrep-sast.yml'
+  - local: '/templates/gitlab/jobs/oss/trivy-osa-sca.yml'
+  - local: '/templates/gitlab/jobs/oss/checkov-iac.yml'
+  - local: '/templates/gitlab/jobs/dockerfile-lint.yml'
+  - local: '/templates/gitlab/jobs/aspm/export-after-script.yml'
+  - local: '/templates/gitlab/jobs/oss/build-kaniko-app.yml'
+  - local: '/templates/gitlab/jobs/oss/trivy-container.yml'
+  - local: '/templates/gitlab/jobs/oss/deploy-kustomize.yml'
+
+# Hard quality gates (day-1): secrets + forbidden_files must fail the pipeline
+gitleaks-scan:
+  allow_failure: false
+
+forbidden-files:
+  allow_failure: false
+
+# Inline KEV/EPSS/gate/ASPM only — no companion enrich jobs
+trivy-osa-sca-enrich:
+  rules:
+    - when: never
+
+trivy-container-enrich:
+  rules:
+    - when: never
+
+trivy-container:
+  stage: image-security-upload
+  needs:
+    - job: build-image
+      artifacts: true
+    - job: trivy-osa-sca
+      artifacts: true
+      optional: true

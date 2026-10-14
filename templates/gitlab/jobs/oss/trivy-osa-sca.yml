@@ -1,0 +1,218 @@
+# B3 — OSA-SCA (Trivy fs: open-source / software composition in source)
+
+.trivy_job:
+  image:
+    name: ${OSS_TRIVY_IMAGE:-aquasec/trivy:0.67.2}
+    entrypoint: [""]
+
+trivy-osa-sca:
+  stage: security
+  extends:
+    - .workflow_rules_security
+    - .security_job_defaults
+    - .trivy_job
+  variables:
+    ASPM_CONTROL: osa-sca
+    ASPM_REPORT: osa-sca.sarif
+  before_script:
+    - !reference [.source_checkout, before_script]
+  script:
+    - |
+      SCAN_ROOT="${SCAN_ROOT:-checkout}"
+      if [ -n "${SCAN_TARGET:-}" ] && [ -d "$SCAN_TARGET" ]; then
+        :
+      elif [ "${SERVICE_PATH:-.}" = "." ] || [ -z "${SERVICE_PATH:-}" ]; then
+        SCAN_TARGET="$SCAN_ROOT"
+      else
+        SCAN_TARGET="${SCAN_ROOT}/${SERVICE_PATH}"
+      fi
+      if [ ! -d "$SCAN_TARGET" ] && [ -d "$SCAN_ROOT" ]; then
+        echo "[osa-sca] WARN: $SCAN_TARGET missing; using $SCAN_ROOT"
+        SCAN_TARGET="$SCAN_ROOT"
+      fi
+      if [ ! -d "$SCAN_TARGET" ]; then
+        echo "[osa-sca] ERROR: scan target missing: $SCAN_TARGET"
+        exit 1
+      fi
+      # Trivy default only reads requirements.txt / lockfiles — not e.g. dev-requirements.txt
+      # (hwa_service Dockerfile: pip install -r dev-requirements.txt). See --file-patterns.
+      MANIFEST_LIST=$(
+        find "$SCAN_TARGET" \( \
+          -name 'requirements.txt' -o \
+          -name '*requirements*.txt' -o \
+          -name 'poetry.lock' -o \
+          -name 'Pipfile.lock' -o \
+          -name 'uv.lock' -o \
+          -name 'pylock.toml' -o \
+          -name 'package-lock.json' -o \
+          -name 'bun.lock' -o \
+          -name 'bun.lockb' -o \
+          -name 'yarn.lock' -o \
+          -name 'pnpm-lock.yaml' -o \
+          -name 'package.json' -o \
+          -name 'go.sum' -o \
+          -name 'Cargo.lock' -o \
+          -name 'pom.xml' -o \
+          -name 'composer.lock' \
+        \) -type f 2>/dev/null | head -80
+      )
+      MANIFEST_N=$(printf '%s\n' "$MANIFEST_LIST" | sed '/^$/d' | wc -l | tr -d ' ')
+      echo "[osa-sca] dependency manifests found: $MANIFEST_N"
+      if [ -n "$MANIFEST_LIST" ]; then
+        printf '%s\n' "$MANIFEST_LIST" | sed 's/^/[osa-sca]   /'
+      fi
+      if [ "${MANIFEST_N:-0}" -eq 0 ]; then
+        echo "[osa-sca] ERROR: no dependency manifests for OSA-SCA under $SCAN_TARGET"
+        echo "[osa-sca] expected: Python/Node/Go/Rust/Java/PHP lockfiles or package manifests (composition inputs)"
+        exit 1
+      fi
+      # Map nonstandard *requirements*.txt (e.g. dev-requirements.txt) to pip analyzer.
+      FILE_PATTERNS_FLAG='--file-patterns'
+      FILE_PATTERNS_VAL='pip:.*requirements.*\.txt'
+      for cand in \
+        /etc/ssl/certs/nexus/ca.crt \
+        "/etc/docker/certs.d/${NEXUS_DOCKER_GROUP:-nexus.svo.aero:8374}/ca.crt" \
+        /etc/ssl/certs/ca-certificates.crt
+      do
+        if [ -f "$cand" ]; then
+          export SSL_CERT_FILE="$cand"
+          echo "[osa-sca] SSL_CERT_FILE=$SSL_CERT_FILE"
+          break
+        fi
+      done
+      export TRIVY_INSECURE="${TRIVY_INSECURE:-false}"
+      export TRIVY_CACHE_DIR="${PWD}/.trivy-cache"
+      mkdir -p "$TRIVY_CACHE_DIR"
+      INSECURE_FLAG=""
+      if [ "$TRIVY_INSECURE" = "true" ] || [ "$TRIVY_INSECURE" = "1" ]; then
+        INSECURE_FLAG="--insecure"
+        echo "[osa-sca] TRIVY_INSECURE=true (corp MITM on Nexus vulndb pull)"
+      fi
+      # Nexus :8374 requires auth (UNAUTHORIZED without creds after x509 bypass).
+      if [ -z "${TRIVY_USERNAME:-}" ] && [ -n "${NEXUS_USER:-}" ]; then
+        export TRIVY_USERNAME="$NEXUS_USER"
+      fi
+      if [ -z "${TRIVY_PASSWORD:-}" ] && [ -n "${NEXUS_PASSWORD:-}" ]; then
+        export TRIVY_PASSWORD="$NEXUS_PASSWORD"
+      fi
+      if [ -n "${TRIVY_USERNAME:-}" ]; then
+        echo "[osa-sca] TRIVY_USERNAME set for Nexus vulndb OCI pull"
+      else
+        echo "[osa-sca] WARN: TRIVY_USERNAME/NEXUS_USER unset — Nexus may return UNAUTHORIZED"
+      fi
+      echo "[osa-sca] trivy file-patterns: $FILE_PATTERNS_VAL"
+      run_trivy_fs() {
+        # shellcheck disable=SC2086
+        trivy fs $INSECURE_FLAG "$SCAN_TARGET" \
+          --scanners vuln --severity CRITICAL,HIGH \
+          "$FILE_PATTERNS_FLAG" "$FILE_PATTERNS_VAL" \
+          --format sarif --output osa-sca.sarif || true
+      }
+      if command -v trivy >/dev/null 2>&1; then
+        run_trivy_fs
+      elif command -v docker >/dev/null 2>&1 && [ -n "${OSS_TRIVY_IMAGE:-}" ]; then
+        # Shell runners often ignore job image:; run Nexus trivy via docker.
+        echo "[osa-sca] trivy binary missing — docker run ${OSS_TRIVY_IMAGE}"
+        DOCKER_ENV="-e TRIVY_DB_REPOSITORY -e TRIVY_JAVA_DB_REPOSITORY -e TRIVY_INSECURE -e TRIVY_CACHE_DIR=/work/.trivy-cache"
+        DOCKER_ENV="$DOCKER_ENV -e TRIVY_USERNAME -e TRIVY_PASSWORD"
+        DOCKER_VOL="-v $PWD:/work"
+        # Host path may contain ':' (nexus.svo.aero:8374) which breaks docker -v parsing.
+        if [ -n "${SSL_CERT_FILE:-}" ] && [ -f "$SSL_CERT_FILE" ]; then
+          CA_HOST="/tmp/nexus-ca-for-trivy.crt"
+          cp "$SSL_CERT_FILE" "$CA_HOST"
+          DOCKER_ENV="$DOCKER_ENV -e SSL_CERT_FILE=/certs/ca.crt"
+          DOCKER_VOL="$DOCKER_VOL -v ${CA_HOST}:/certs/ca.crt:ro"
+        fi
+        # Run as job user so .trivy-cache is not root-owned (shell executor workspace reuse).
+        # shellcheck disable=SC2086
+        docker run --rm --user "$(id -u):$(id -g)" --entrypoint trivy $DOCKER_ENV $DOCKER_VOL -w /work "${OSS_TRIVY_IMAGE}" \
+          fs $INSECURE_FLAG "$SCAN_TARGET" \
+          --scanners vuln --severity CRITICAL,HIGH \
+          "$FILE_PATTERNS_FLAG" "$FILE_PATTERNS_VAL" \
+          --format sarif --output osa-sca.sarif || true
+        chmod -R u+rwX .trivy-cache 2>/dev/null || true
+      else
+        echo "[osa-sca] ERROR: trivy unavailable (need OSS_TRIVY_IMAGE in job image or docker; no apk/apt)"
+        exit 1
+      fi
+      if [ ! -f osa-sca.sarif ]; then
+        echo "[osa-sca] ERROR: osa-sca.sarif was not produced"
+        exit 1
+      fi
+      # Distinguish "no CRITICAL/HIGH CVEs" from "never parsed deps".
+      if command -v python3 >/dev/null 2>&1; then
+        SARIF_N=$(python3 -c "import json,sys; d=json.load(open('osa-sca.sarif',encoding='utf-8')); print(sum(len(r.get('results') or []) for r in d.get('runs') or []))")
+      elif command -v docker >/dev/null 2>&1 && [ -n "${OSS_PYTHON_IMAGE:-}" ]; then
+        SARIF_N=$(docker run --rm -v "$PWD:/work" -w /work "${OSS_PYTHON_IMAGE}" \
+          python3 -c "import json; d=json.load(open('osa-sca.sarif',encoding='utf-8')); print(sum(len(r.get('results') or []) for r in d.get('runs') or []))")
+      else
+        SARIF_N="unknown"
+      fi
+      echo "[osa-sca] manifests=$MANIFEST_N sarif_results=${SARIF_N} osa-sca.sarif_bytes=$(wc -c < osa-sca.sarif | tr -d ' ')"
+      if command -v python3 >/dev/null 2>&1; then
+        python3 scripts/kev-enrich-sarif.py --in osa-sca.sarif --catalog config/kev/cisa-kev.min.json --hits kev-hits.json || true
+        python3 scripts/epss-enrich-sarif.py --in osa-sca.sarif --catalog config/epss/epss_scores.min.json.gz --hits epss-hits.json || true
+        python3 scripts/gate-check.py --control osa-sca --report osa-sca.sarif --policy "${SECURITY_POLICY:-config/security-gate-policy.yaml}"
+      elif command -v docker >/dev/null 2>&1 && [ -n "${OSS_PYTHON_IMAGE:-}" ]; then
+        echo "[osa-sca] python3 missing in scanner image — running kev/epss-enrich+gate-check via Nexus python image"
+        docker run --rm -v "$PWD:/work" -w /work "${OSS_PYTHON_IMAGE}" \
+          python3 scripts/kev-enrich-sarif.py --in osa-sca.sarif --catalog config/kev/cisa-kev.min.json --hits kev-hits.json || true
+        docker run --rm -v "$PWD:/work" -w /work "${OSS_PYTHON_IMAGE}" \
+          python3 scripts/epss-enrich-sarif.py --in osa-sca.sarif --catalog config/epss/epss_scores.min.json.gz --hits epss-hits.json || true
+        docker run --rm -v "$PWD:/work" -w /work "${OSS_PYTHON_IMAGE}" \
+          python3 scripts/gate-check.py --control osa-sca --report osa-sca.sarif --policy "${SECURITY_POLICY:-config/security-gate-policy.yaml}"
+      elif [ -s osa-sca.sarif ] && echo "${SECURITY_POLICY:-}" | grep -q adopt; then
+        # Trivy image has no python; K8s pods have no docker socket. Adopt policy: SARIF evidence enough.
+        echo "[osa-sca] WARN: gate-check skipped (no python/docker in corp trivy image); osa-sca.sarif produced"
+      else
+        echo "[osa-sca] ERROR: python3 unavailable and no docker to run OSS_PYTHON_IMAGE for gate-check (no apk/apt)"
+        exit 1
+      fi
+  after_script:
+    - sh scripts/aspm-export-ci.sh
+  artifacts:
+    paths:
+      - osa-sca.sarif
+      - kev-hits.json
+      - epss-hits.json
+      - .trivy-cache
+    expire_in: 30 days
+
+# K8s executor: Trivy image has no python3 and no docker socket — enrich/gate in a
+# follow-up job on OSS_PYTHON_IMAGE (Nexus) so kev-hits.json / epss-hits.json land.
+trivy-osa-sca-enrich:
+  stage: security
+  extends:
+    - .workflow_rules_security
+    - .security_job_defaults
+  image:
+    name: $OSS_PYTHON_IMAGE
+    entrypoint: [""]
+  variables:
+    ASPM_CONTROL: osa-sca
+    ASPM_REPORT: osa-sca.sarif
+  needs:
+    - job: trivy-osa-sca
+      artifacts: true
+  script:
+    - |
+      set -eu
+      echo "[osa-sca-enrich] python=$(command -v python3 || true) pwd=$PWD"
+      ls -la osa-sca.sarif config/kev/cisa-kev.min.json config/epss/epss_scores.min.json.gz scripts/kev-enrich-sarif.py 2>&1 || true
+      if [ ! -f osa-sca.sarif ]; then
+        echo "[osa-sca-enrich] ERROR: osa-sca.sarif missing (trivy-osa artifacts not passed)"
+        exit 1
+      fi
+      python3 scripts/kev-enrich-sarif.py --in osa-sca.sarif --catalog config/kev/cisa-kev.min.json --hits kev-hits.json
+      python3 scripts/epss-enrich-sarif.py --in osa-sca.sarif --catalog config/epss/epss_scores.min.json.gz --hits epss-hits.json
+      python3 scripts/gate-check.py --control osa-sca --report osa-sca.sarif --policy "${SECURITY_POLICY:-config/security-gate-policy-adopt.yaml}"
+      ls -la kev-hits.json epss-hits.json
+  after_script:
+    - sh scripts/aspm-export-ci.sh
+  artifacts:
+    paths:
+      - osa-sca.sarif
+      - kev-hits.json
+      - epss-hits.json
+    expire_in: 30 days
+  allow_failure: true

@@ -105,7 +105,7 @@ ok "build hard-fail"
 python3 - <<'PY' || fail "non-cleanup allow_failure:true in profile"
 from pathlib import Path
 text = Path("templates/profiles/oss-full-service-mirror.gitlab-ci.yml").read_text().splitlines()
-allowed = {"cleanup-runner", "trivy-osa-enrich", "trivy-sca-enrich"}
+allowed = {"cleanup-runner", "trivy-osa-sca-enrich", "trivy-container-enrich"}
 job = None
 for i, line in enumerate(text, 1):
     if line and not line.startswith(" ") and not line.startswith("#") and line.endswith(":"):
@@ -226,6 +226,15 @@ else
   fail "point-copy must copy templates/reports/* to TARGET/templates/reports/*"
 fi
 grep -q 'mirror-fleet-trigger.py' scripts/point-copy-mirror.sh || fail "point-copy missing fleet trigger"
+grep -q 'gen-mirror-deploy-env.py' scripts/point-copy-mirror.sh || fail "point-copy missing gen-mirror-deploy-env.py"
+grep -q '\-\-wait' scripts/mirror-fleet-trigger.py || fail "fleet trigger must support --wait"
+grep -q 'SKIP_API_SECURITY' scripts/resolve-mirror-service.sh || fail "resolve must export SKIP_API_SECURITY"
+grep -q 'mirror_deploy_rules' templates/profiles/oss-full-service-mirror.gitlab-ci.yml || \
+  fail "profile must define mirror_deploy_rules"
+grep -q 'deploying postgres stub' scripts/deploy-test-k8s.sh || fail "deploy must include postgres stub"
+grep -q 'deploying redis stub' scripts/deploy-test-k8s.sh || fail "deploy must include redis stub"
+grep -q 'OSS_POSTGRES_IMAGE' templates/profiles/oss-full-service-mirror.gitlab-ci.yml || \
+  fail "profile must define OSS_POSTGRES_IMAGE"
 grep -q 'dojo-render-aspm-report.py' scripts/point-copy-mirror.sh || fail "point-copy missing dojo-render"
 ok "point-copy lists fleet + HTML renderer"
 grep -q 'templates/gitlab/jobs' scripts/point-copy-mirror.sh || fail "point-copy must copy templates/gitlab/jobs overlay"
@@ -296,14 +305,14 @@ grep -q 'kev-catalog\|kev_catalog\|cisa-kev' scripts/dojo-render-aspm-report.py 
   fail "dojo-render must reference KEV catalog"
 grep -q 'kev-catalog' templates/gitlab/jobs/oss/aspm-html-report-mirror.yml || \
   fail "aspm-html job must pass --kev-catalog"
-grep -q 'kev-enrich-sarif.py' templates/gitlab/jobs/oss/trivy-osa.yml || \
-  fail "trivy-osa must call kev-enrich-sarif.py"
-grep -q 'kev-enrich-sarif.py' templates/gitlab/jobs/oss/trivy-sca.yml || \
-  fail "trivy-sca must call kev-enrich-sarif.py"
-grep -q 'trivy-osa-enrich' templates/gitlab/jobs/oss/trivy-osa.yml || \
-  fail "trivy-osa-enrich job required (k8s trivy image has no python)"
-grep -q 'trivy-sca-enrich' templates/gitlab/jobs/oss/trivy-sca.yml || \
-  fail "trivy-sca-enrich job required (k8s trivy image has no python)"
+grep -q 'kev-enrich-sarif.py' templates/gitlab/jobs/oss/trivy-osa-sca.yml || \
+  fail "trivy-osa-sca must call kev-enrich-sarif.py"
+grep -q 'kev-enrich-sarif.py' templates/gitlab/jobs/oss/trivy-container.yml || \
+  fail "trivy-container must call kev-enrich-sarif.py"
+grep -q 'trivy-osa-sca-enrich' templates/gitlab/jobs/oss/trivy-osa-sca.yml || \
+  fail "trivy-osa-sca-enrich job required (k8s trivy image has no python)"
+grep -q 'trivy-container-enrich' templates/gitlab/jobs/oss/trivy-container.yml || \
+  fail "trivy-container-enrich job required (k8s trivy image has no python)"
 grep -q 'vendor-aodb-log-tools' scripts/kaniko-mirror-build.sh || \
   fail "kaniko must vendor aodb-log-tools"
 grep -q 'scripts/kev-enrich-sarif.py' scripts/point-copy-mirror.sh || \
@@ -322,14 +331,34 @@ grep -q 'epss-catalog\|epss_catalog\|epss_scores' scripts/dojo-render-aspm-repor
   fail "dojo-render must reference EPSS catalog"
 grep -q 'epss-catalog' templates/gitlab/jobs/oss/aspm-html-report-mirror.yml || \
   fail "aspm-html job must pass --epss-catalog"
-grep -q 'epss-enrich-sarif.py' templates/gitlab/jobs/oss/trivy-osa.yml || \
-  fail "trivy-osa must call epss-enrich-sarif.py"
-grep -q 'epss-enrich-sarif.py' templates/gitlab/jobs/oss/trivy-sca.yml || \
-  fail "trivy-sca must call epss-enrich-sarif.py"
+grep -q 'epss-enrich-sarif.py' templates/gitlab/jobs/oss/trivy-osa-sca.yml || \
+  fail "trivy-osa-sca must call epss-enrich-sarif.py"
+grep -q 'epss-enrich-sarif.py' templates/gitlab/jobs/oss/trivy-container.yml || \
+  fail "trivy-container must call epss-enrich-sarif.py"
 grep -q 'scripts/epss-enrich-sarif.py' scripts/point-copy-mirror.sh || \
   fail "point-copy missing epss-enrich-sarif.py"
 [[ -f scripts/epss-enrich-sarif.py ]] || fail "missing scripts/epss-enrich-sarif.py"
 ok "FIRST EPSS offline catalog wired"
+
+# OSA/SCA → DefectDojo Generic Findings (KEV/EPSS native fields)
+[[ -f scripts/aspm-export-ci.sh ]] || fail "missing scripts/aspm-export-ci.sh"
+grep -q 'scripts/aspm-export-ci.sh' scripts/point-copy-mirror.sh || \
+  fail "point-copy missing aspm-export-ci.sh"
+grep -q 'sarif_to_generic' scripts/aspm-export.py || \
+  fail "aspm-export.py must define sarif_to_generic for KEV/EPSS Dojo fields"
+grep -A2 '^  osa:' config/aspm-export.yaml | grep -q 'Generic Findings Import' || \
+  fail "osa control must use Generic Findings Import"
+grep -A2 '^  container:' config/aspm-export.yaml | grep -q 'Generic Findings Import' || \
+  fail "container control must use Generic Findings Import"
+grep -q 'aspm-export-ci.sh' templates/gitlab/jobs/oss/trivy-osa-sca.yml || \
+  fail "trivy-osa-sca must call aspm-export-ci.sh"
+grep -q 'aspm-export-ci.sh' templates/gitlab/jobs/oss/trivy-container.yml || \
+  fail "trivy-container must call aspm-export-ci.sh"
+grep -q 'ASPM_CONTROL: osa-sca' templates/gitlab/jobs/oss/trivy-osa-sca.yml || \
+  fail "trivy-osa-sca must set ASPM_CONTROL=osa-sca"
+grep -q 'ASPM_CONTROL: container' templates/gitlab/jobs/oss/trivy-container.yml || \
+  fail "trivy-container must set ASPM_CONTROL=container"
+ok "OSA/SCA DefectDojo Generic + ASPM upload wired"
 
 if [[ "$FAIL" -ne 0 ]]; then
   echo "validate-mirror-corp: FAILED"

@@ -77,8 +77,16 @@ def load_services(path: str | Path) -> list[dict[str, Any]]:
                 "api_path_prefix",
                 "deploy_env_file",
                 "deploy_stubs",
+                "build_docker_target",
             ):
                 cur[k] = v
+            elif k == "scan_order":
+                try:
+                    cur["scan_order"] = int(v)
+                except ValueError:
+                    cur["scan_order"] = 9999
+            elif k == "skip_api_security":
+                cur["skip_api_security"] = _parse_bool(v, False)
         if line and not line.startswith(" ") and not line.startswith("#"):
             flush()
     flush()
@@ -117,4 +125,5 @@ def filter_services(
         if name_set is not None and s.get("name") not in name_set:
             continue
         out.append(s)
+    out.sort(key=lambda x: (int(x.get("scan_order") or 9999), str(x.get("name") or "")))
     return out

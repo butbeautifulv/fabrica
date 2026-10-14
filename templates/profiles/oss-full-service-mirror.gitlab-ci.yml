@@ -54,6 +54,8 @@ variables:
   # Any image that can exec a static linux/amd64 binary (Go DFD renderer, no Graphviz).
   OSS_DIAGRAMS_IMAGE: "$OSS_PYTHON_IMAGE"
   OSS_MONGO_IMAGE: "$NEXUS_DOCKER_PREFIX/library/mongo:6"
+  OSS_POSTGRES_IMAGE: "$NEXUS_DOCKER_PREFIX/library/postgres:16"
+  OSS_REDIS_IMAGE: "$NEXUS_DOCKER_PREFIX/library/redis:7-alpine"
   TRIVY_DB_REPOSITORY: "$NEXUS_DOCKER_GROUP/aquasecurity/trivy-db"
   TRIVY_JAVA_DB_REPOSITORY: "$NEXUS_DOCKER_GROUP/aquasecurity/trivy-java-db"
   TRIVY_INSECURE: "true"
@@ -82,6 +84,14 @@ variables:
   - if: '$CI_COMMIT_TAG'
   - if: '$SERVICE_NAME'
   - when: never
+
+# Skip ephemeral deploy/DAST/fuzz when worker has no HTTP API or deploy env is missing.
+.mirror_deploy_rules: &mirror_deploy_rules
+  - if: '$SKIP_API_SECURITY == "true"'
+    when: never
+  - if: '$SKIP_DEPLOY == "true"'
+    when: never
+  - *mirror_service_rules
 
 workflow:
   rules:
@@ -113,13 +123,13 @@ include:
   - local: '/templates/gitlab/jobs/forbidden-files.yml'
   - local: '/templates/gitlab/jobs/oss/semgrep-sast.yml'
   - local: '/templates/gitlab/jobs/oss/bandit-sast.yml'
-  - local: '/templates/gitlab/jobs/oss/trivy-osa.yml'
+  - local: '/templates/gitlab/jobs/oss/trivy-osa-sca.yml'
   - local: '/templates/gitlab/jobs/oss/checkov-iac.yml'
   - local: '/templates/gitlab/jobs/dockerfile-lint.yml'
   - local: '/templates/gitlab/jobs/linter-security.yml'
   - local: '/templates/gitlab/jobs/oss/build-kaniko.yml'
   - local: '/templates/gitlab/jobs/sbom.yml'
-  - local: '/templates/gitlab/jobs/oss/trivy-sca.yml'
+  - local: '/templates/gitlab/jobs/oss/trivy-container.yml'
   - local: '/templates/gitlab/jobs/aspm/export-after-script.yml'
   - local: '/templates/gitlab/jobs/sign.yml'
   - local: '/templates/gitlab/jobs/oss/deploy-test-mirror.yml'
@@ -162,14 +172,14 @@ bandit-sast:
   rules: *mirror_service_rules
   allow_failure: false
 
-trivy-osa:
+trivy-osa-sca:
   image:
     name: $OSS_TRIVY_IMAGE
     entrypoint: [""]
   rules: *mirror_service_rules
   allow_failure: false
 
-trivy-osa-enrich:
+trivy-osa-sca-enrich:
   image:
     name: $OSS_PYTHON_IMAGE
     entrypoint: [""]
@@ -216,7 +226,7 @@ sbom-generate:
     - when: never
   allow_failure: false
 
-trivy-sca:
+trivy-container:
   image:
     name: $OSS_TRIVY_IMAGE
     entrypoint: [""]
@@ -227,7 +237,7 @@ trivy-sca:
       optional: false
   allow_failure: false
 
-trivy-sca-enrich:
+trivy-container-enrich:
   image:
     name: $OSS_PYTHON_IMAGE
     entrypoint: [""]
@@ -238,7 +248,7 @@ api-fuzz-schemathesis:
   image:
     name: $OSS_SCHEMATHESIS_IMAGE
     entrypoint: [""]
-  rules: *mirror_service_rules
+  rules: *mirror_deploy_rules
   # Skip-with-log exits 0; real fuzz failures must fail the job.
   allow_failure: false
 
@@ -246,7 +256,7 @@ deploy-test:
   image:
     name: $OSS_KUBECTL_IMAGE
     entrypoint: [""]
-  rules: *mirror_service_rules
+  rules: *mirror_deploy_rules
   allow_failure: false
 
 dast-zap:
@@ -258,14 +268,14 @@ dast-zap:
   variables:
     KUBERNETES_MEMORY_REQUEST: "512Mi"
     KUBERNETES_MEMORY_LIMIT: "2Gi"
-  rules: *mirror_service_rules
+  rules: *mirror_deploy_rules
   allow_failure: false
 
 cleanup-test:
   image:
     name: $OSS_KUBECTL_IMAGE
     entrypoint: [""]
-  rules: *mirror_service_rules
+  rules: *mirror_deploy_rules
 
 sign-image:
   rules:

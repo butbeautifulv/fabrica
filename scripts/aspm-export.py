@@ -243,6 +243,176 @@ def infra_summary_to_generic(path: Path) -> Path:
     return out
 
 
+_SARIF_LEVEL_TO_SEV = {
+    "error": "High",
+    "warning": "Medium",
+    "note": "Low",
+    "none": "Info",
+}
+
+
+def _sarif_result_severity(result: dict) -> str:
+    """Map SARIF level / security-severity to DefectDojo severity."""
+    props = result.get("properties") if isinstance(result.get("properties"), dict) else {}
+    sec = props.get("security-severity") or props.get("security_severity")
+    if sec is not None:
+        try:
+            score = float(sec)
+            if score >= 9.0:
+                return "Critical"
+            if score >= 7.0:
+                return "High"
+            if score >= 4.0:
+                return "Medium"
+            if score > 0:
+                return "Low"
+            return "Info"
+        except (TypeError, ValueError):
+            label = str(sec).strip().capitalize()
+            if label in ("Critical", "High", "Medium", "Low", "Info"):
+                return label
+    level = str(result.get("level") or "warning").lower()
+    return _SARIF_LEVEL_TO_SEV.get(level, "Medium")
+
+
+def _sarif_result_location(result: dict) -> tuple[str, int | None]:
+    for loc in result.get("locations") or []:
+        if not isinstance(loc, dict):
+            continue
+        phys = loc.get("physicalLocation") or {}
+        if not isinstance(phys, dict):
+            continue
+        art = phys.get("artifactLocation") or {}
+        uri = ""
+        if isinstance(art, dict):
+            uri = str(art.get("uri") or "")
+        region = phys.get("region") or {}
+        line = None
+        if isinstance(region, dict) and region.get("startLine") is not None:
+            try:
+                line = int(region["startLine"])
+            except (TypeError, ValueError):
+                line = None
+        if uri:
+            if uri.startswith("file://") and "/checkout/" in uri:
+                uri = uri.split("/checkout/", 1)[1]
+            return uri, line
+    return "", None
+
+
+def _sarif_result_texts(result: dict) -> list[str]:
+    parts: list[str] = []
+    rule_id = result.get("ruleId")
+    if rule_id:
+        parts.append(str(rule_id))
+    msg = result.get("message") or {}
+    if isinstance(msg, dict):
+        parts.append(str(msg.get("text") or ""))
+    else:
+        parts.append(str(msg))
+    props = result.get("properties") or {}
+    if isinstance(props, dict):
+        for key in ("cve", "vulnerabilityID", "VulnerabilityID", "epssCve"):
+            if props.get(key):
+                parts.append(str(props[key]))
+        for key in ("cisaKevCves",):
+            val = props.get(key)
+            if isinstance(val, list):
+                parts.extend(str(x) for x in val)
+            elif val:
+                parts.append(str(val))
+    return parts
+
+
+def sarif_result_to_generic_finding(result: dict) -> dict:
+    """Map one enriched SARIF result to DefectDojo Generic Findings Import shape."""
+    # Local import keeps aspm-export usable when lib/ is absent (rare).
+    try:
+        from lib.kev_catalog import extract_cves  # type: ignore
+    except ImportError:
+        _cve_re = re.compile(r"CVE-\d{4}-\d{4,}", re.IGNORECASE)
+
+        def extract_cves(*texts: str | None) -> list[str]:  # type: ignore
+            seen: set[str] = set()
+            out: list[str] = []
+            for text in texts:
+                if not text:
+                    continue
+                for m in _cve_re.finditer(str(text)):
+                    cve = m.group(0).upper()
+                    if cve not in seen:
+                        seen.add(cve)
+                        out.append(cve)
+            return out
+
+    props = result.get("properties") if isinstance(result.get("properties"), dict) else {}
+    msg = result.get("message") or {}
+    msg_text = str(msg.get("text") or "") if isinstance(msg, dict) else str(msg or "")
+    rule_id = str(result.get("ruleId") or "").strip() or "unknown"
+    cves = extract_cves(*_sarif_result_texts(result))
+    title = rule_id if rule_id.startswith("CVE-") else (cves[0] if cves else rule_id)
+    if rule_id and not title.startswith("CVE-") and cves:
+        title = f"{rule_id}: {cves[0]}"
+    elif rule_id and title == rule_id and msg_text:
+        title = f"{rule_id}: {msg_text.splitlines()[0][:120]}"
+
+    finding: dict = {
+        "title": title[:500],
+        "severity": _sarif_result_severity(result),
+        "description": msg_text[:4000] or title,
+    }
+    file_path, line = _sarif_result_location(result)
+    if file_path:
+        finding["file_path"] = file_path
+    if line is not None:
+        finding["line"] = line
+    if cves:
+        # DefectDojo 2.50 Generic importer 500s on deprecated top-level "cve";
+        # use vulnerability_ids only (verified against corp Dojo).
+        finding["vulnerability_ids"] = cves
+
+    tags: list[str] = []
+    if props.get("cisaKev") is True or props.get("cisaKev") == "true":
+        finding["known_exploited"] = True
+        tags.append("cisa-kev")
+    epss = props.get("epss")
+    if epss is not None:
+        try:
+            finding["epss_score"] = float(epss)
+            tags.append("epss")
+        except (TypeError, ValueError):
+            pass
+    epss_pct = props.get("epssPercentile")
+    if epss_pct is not None:
+        try:
+            finding["epss_percentile"] = float(epss_pct)
+        except (TypeError, ValueError):
+            pass
+    if tags:
+        finding["tags"] = tags
+    return finding
+
+
+def sarif_to_generic(path: Path) -> Path:
+    """Convert enriched Trivy SARIF to DefectDojo Generic Findings Import JSON.
+
+    Maps ``properties.epss`` / ``epssPercentile`` / ``cisaKev`` into native Finding
+    fields so DefectDojo UI shows EPSS and KEV (SARIF importer ignores custom props).
+    """
+    data = json.loads(path.read_text(encoding="utf-8"))
+    findings: list[dict] = []
+    if isinstance(data, dict):
+        for run in data.get("runs") or []:
+            if not isinstance(run, dict):
+                continue
+            for result in run.get("results") or []:
+                if isinstance(result, dict):
+                    findings.append(sarif_result_to_generic_finding(result))
+    out = path.with_name(path.stem + ".generic.json")
+    out.write_text(json.dumps({"findings": findings}, indent=2) + "\n", encoding="utf-8")
+    return out
+
+
 def junit_to_generic(path: Path) -> Path:
     """Convert Schemathesis/JUnit XML to DefectDojo Generic Findings Import.
 
@@ -406,9 +576,10 @@ def main() -> None:
         report = args.report
         ctrl = (cfg.get("controls") or {}).get(args.control) or {}
         scan_type = str(ctrl.get("scan_type", "SARIF"))
+        is_sarif = report.suffix.lower() == ".sarif"
         # Validate + sanitize SARIF locally before POST.
         # DefectDojo 500 on null ruleId (ruff) — fix here, do not soft-fail the job.
-        if scan_type == "SARIF" or report.suffix.lower() == ".sarif":
+        if (scan_type == "SARIF" or is_sarif) and scan_type != "Generic Findings Import":
             try:
                 data = json.loads(report.read_text(encoding="utf-8"))
             except Exception as e:
@@ -418,6 +589,21 @@ def main() -> None:
                 print(f"[aspm] ERROR: SARIF missing 'runs' key: {report}", file=sys.stderr)
                 sys.exit(1)
             report = sanitize_sarif_for_dojo(report)
+        # OSA/SCA: Generic Import so KEV/EPSS land on Finding (SARIF props are ignored).
+        if is_sarif and (
+            scan_type == "Generic Findings Import" or args.control in ("osa", "sca")
+        ):
+            try:
+                data = json.loads(report.read_text(encoding="utf-8"))
+            except Exception as e:
+                print(f"[aspm] ERROR: report is not valid JSON ({report}): {e}", file=sys.stderr)
+                sys.exit(1)
+            if not isinstance(data, dict) or "runs" not in data:
+                print(f"[aspm] ERROR: SARIF missing 'runs' key: {report}", file=sys.stderr)
+                sys.exit(1)
+            report = sanitize_sarif_for_dojo(report)
+            report = sarif_to_generic(report)
+            print(f"[aspm] converted enriched SARIF → {report}")
         if args.control == "infra" and report.name.endswith("summary_infra.json"):
             report = infra_summary_to_generic(report)
             print(f"[aspm] converted infra summary → {report}")
